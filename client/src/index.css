@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply antialiased;
+  }
+
+  /* Elements without an explicit dark: text class (plain table cells, labels, etc.)
+     inherit this, so they stay readable on dark backgrounds. */
+  .dark body {
+    @apply text-gray-100;
+  }
+
+  .dark input,
+  .dark select,
+  .dark textarea {
+    @apply text-gray-100;
+  }
+
+  .dark input::placeholder,
+  .dark textarea::placeholder {
+    @apply text-gray-400;
+  }
+
+  .dark select option {
+    @apply bg-gray-800 text-gray-100;
+  }
+}

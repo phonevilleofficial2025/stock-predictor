@@ -1,0 +1,6 @@
+Store,SKU,Device Model,Variant,Quantity,Flagship
+Store A,IP15-128-BLK,iPhone 15,128GB Black,40,Y
+Store A,IP15-256-BLU,iPhone 15,256GB Blue,10,Y
+Store A,PIX8-128-BLK,Pixel 8,128GB Black,60,N
+Store B,IP15-128-BLK,iPhone 15,128GB Black,5,Y
+Store B,PIX8-128-BLK,Pixel 8,128GB Black,20,N
