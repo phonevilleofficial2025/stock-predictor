@@ -10,7 +10,7 @@ export default function TableToolbar({
   showQtyFilter = false, minQty, onMinQtyChange, maxQty, onMaxQtyChange,
   showCategoryFilter = false, categoryFilter, onCategoryChange, categoryOptions = [],
   showBrandFilter = false, brandFilter, onBrandChange, brandOptions = [],
-  pageSize, onPageSizeChange,
+  pageSize, onPageSizeChange, pageSizeOptions = PAGE_SIZE_OPTIONS,
   onExport,
 }) {
   return (
@@ -71,12 +71,14 @@ export default function TableToolbar({
         </label>
       )}
 
-      <div>
-        <label className={labelCls}>Show</label>
-        <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))} className={inputCls}>
-          {PAGE_SIZE_OPTIONS.map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </div>
+      {onPageSizeChange && (
+        <div>
+          <label className={labelCls}>Show</label>
+          <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))} className={inputCls}>
+            {pageSizeOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+      )}
 
       {onExport && (
         <SecondaryButton onClick={onExport}>Export CSV</SecondaryButton>

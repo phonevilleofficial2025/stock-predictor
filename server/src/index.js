@@ -13,6 +13,7 @@ import cpfrRouter from './routes/cpfr.js';
 import balanceRouter from './routes/balance.js';
 import poRouter from './routes/po.js';
 import rsiRouter from './routes/rsi.js';
+import deviceMasterRouter from './routes/deviceMaster.js';
 
 ensureAdminAccount();
 
@@ -35,6 +36,7 @@ app.use('/api', cpfrRouter);
 app.use('/api', balanceRouter);
 app.use('/api', poRouter);
 app.use('/api', rsiRouter);
+app.use('/api', deviceMasterRouter);
 
 app.use((err, req, res, next) => {
   console.error(err);

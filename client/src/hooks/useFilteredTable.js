@@ -5,7 +5,7 @@ const DEFAULT_PAGE_SIZE = 20;
 const ALL_CATEGORIES = 'ALL';
 const ALL_BRANDS = 'ALL';
 
-export function useFilteredTable(rows, { getSearchText, getIsFlagship, getOnHand, getCategory, getBrand } = {}) {
+export function useFilteredTable(rows, { getSearchText, getIsFlagship, getOnHand, getCategory, getBrand, defaultPageSize = DEFAULT_PAGE_SIZE } = {}) {
   const [search, setSearchState] = useState('');
   const [flagshipOnly, setFlagshipOnlyState] = useState(false);
   const [minQty, setMinQtyState] = useState('');
@@ -13,7 +13,7 @@ export function useFilteredTable(rows, { getSearchText, getIsFlagship, getOnHand
   const [categoryFilter, setCategoryFilterState] = useState(ALL_CATEGORIES);
   const [brandFilter, setBrandFilterState] = useState(ALL_BRANDS);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE);
+  const [pageSize, setPageSizeState] = useState(defaultPageSize);
 
   const categoryOptions = useMemo(() => {
     if (!getCategory) return [];

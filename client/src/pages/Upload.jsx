@@ -111,6 +111,7 @@ function UploadCard({ fileType, title, description, onCommitted }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [cpfrDate, setCpfrDate] = useState('');
 
   const detectedWeek = useMemo(() => {
     if (fileType !== 'sales' || !preview || !mapping.saleDate) return null;
@@ -127,12 +128,23 @@ function UploadCard({ fileType, title, description, onCommitted }) {
     return `${retailYear}-W${String(retailWeek).padStart(2, '0')}`;
   }, [fileType, preview, mapping.saleDate]);
 
+  // CPFR cycle files carry no date/week column — the week is picked by hand here
+  // instead, then resolved through the same retail-week math the sales upload uses.
+  const cpfrWeek = useMemo(() => {
+    if (fileType !== 'cpfr' || !cpfrDate) return null;
+    const d = new Date(cpfrDate);
+    if (Number.isNaN(d.getTime())) return null;
+    const { retailYear, retailWeek } = retailWeekInfo(d);
+    return `${retailYear}-W${String(retailWeek).padStart(2, '0')}`;
+  }, [fileType, cpfrDate]);
+
   async function handleFileChange(e) {
     const f = e.target.files[0];
     if (!f) return;
     setFile(f);
     setError(null);
     setResult(null);
+    setCpfrDate('');
     setBusy(true);
     try {
       const p = await api.previewUpload(fileType, f);
@@ -147,11 +159,17 @@ function UploadCard({ fileType, title, description, onCommitted }) {
   }
 
   async function handleCommit() {
+    if (fileType === 'cpfr' && !cpfrDate) {
+      setError('Pick a date first, so this upload can be assigned to the right week.');
+      return;
+    }
     const ok = await confirm({
-      title: fileType === 'inventory' ? 'Commit inventory upload?' : 'Commit sales upload?',
+      title: fileType === 'inventory' ? 'Commit inventory upload?' : fileType === 'sales' ? 'Commit sales upload?' : 'Commit CPFR upload?',
       message: fileType === 'inventory'
-        ? `This will overwrite on-hand stock for every matched product in "${file?.name}" (${preview.rowCount} row(s)). This cannot be undone. Continue?`
-        : `This will save sell-out totals for week ${detectedWeek || '(unknown)'} from "${file?.name}" (${preview.rowCount} row(s)). This cannot be undone. Continue?`,
+        ? `This will overwrite on-hand stock for every matched product in "${file?.name}" (${preview.rowCount} row(s)), and zero out any product a store previously carried that isn't in this file anymore. This cannot be undone. Continue?`
+        : fileType === 'sales'
+          ? `This will save sell-out totals for week ${detectedWeek || '(unknown)'} from "${file?.name}" (${preview.rowCount} row(s)). This cannot be undone. Continue?`
+          : `This will add each alias's summed quantity from "${file?.name}" (${preview.rowCount} row(s)) on top of week ${cpfrWeek}'s existing Weekly CPFR value. This cannot be undone. Continue?`,
       confirmLabel: 'Commit',
     });
     if (!ok) return;
@@ -162,12 +180,15 @@ function UploadCard({ fileType, title, description, onCommitted }) {
       let res;
       if (fileType === 'inventory') {
         res = await api.commitInventory({ uploadId: preview.uploadId, mapping });
-      } else {
+      } else if (fileType === 'sales') {
         res = await api.commitSales({ uploadId: preview.uploadId, mapping });
+      } else {
+        res = await api.commitCpfr({ uploadId: preview.uploadId, mapping, date: cpfrDate });
       }
       setResult(res);
       setPreview(null);
       setFile(null);
+      setCpfrDate('');
       onCommitted?.();
     } catch (err) {
       setError(err.message);
@@ -200,8 +221,10 @@ function UploadCard({ fileType, title, description, onCommitted }) {
       {result && (
         <div className="bg-green-50 dark:bg-green-900 border border-green-200 dark:border-green-700 text-green-800 dark:text-green-200 px-4 py-3 rounded mt-3">
           {fileType === 'inventory'
-            ? <>Stock updated for {result.rowsUpdated} row(s).</>
-            : <>Week {result.weekLabel} sales saved for {result.productsUpdated} product(s).</>}
+            ? <>Stock updated for {result.rowsUpdated} row(s){result.rowsZeroed ? <> — {result.rowsZeroed} product(s) no longer in this file were zeroed out</> : null}.</>
+            : fileType === 'sales'
+              ? <>Week {result.weekLabel} sales saved for {result.productsUpdated} product(s).</>
+              : <>Week {result.weekLabel} CPFR updated for {result.aliasesUpdated} alias(es){result.skippedCount ? <> — {result.skippedCount} row(s) had a non-numeric quantity and were skipped</> : null}.</>}
         </div>
       )}
 
@@ -233,9 +256,34 @@ function UploadCard({ fileType, title, description, onCommitted }) {
             </div>
           )}
 
+          {fileType === 'cpfr' && (
+            <div className="flex flex-wrap gap-4 items-start mb-4">
+              <div>
+                <label className="block font-medium text-sm text-gray-700 dark:text-gray-300 mb-1">Date (picks the week)</label>
+                <input
+                  type="date"
+                  value={cpfrDate}
+                  onChange={(e) => setCpfrDate(e.target.value)}
+                  className="border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 rounded-md shadow-sm focus:border-indigo-500 dark:focus:border-indigo-600 focus:ring-indigo-500 dark:focus:ring-indigo-600 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block font-medium text-sm text-gray-700 dark:text-gray-300 mb-1">Week</label>
+                <div className="border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 rounded-md px-3 py-2 text-sm font-medium text-gray-900 dark:text-gray-100 min-w-[9rem]">
+                  {cpfrWeek || '—'}
+                </div>
+              </div>
+              <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">
+                This file has no date column, so pick any date that falls in the week you're planning — the retail week
+                (Sunday–Saturday) it belongs to is resolved automatically. Rows sharing an alias are summed into one
+                quantity, added on top of that week's existing Weekly CPFR value for each alias.
+              </p>
+            </div>
+          )}
+
           <div className="flex gap-2">
-            <PrimaryButton type="button" onClick={handleCommit} disabled={busy}>Confirm &amp; Update</PrimaryButton>
-            <SecondaryButton onClick={() => { setPreview(null); setFile(null); }} disabled={busy}>Cancel</SecondaryButton>
+            <PrimaryButton type="button" onClick={handleCommit} disabled={busy || (fileType === 'cpfr' && !cpfrDate)}>Confirm &amp; Update</PrimaryButton>
+            <SecondaryButton onClick={() => { setPreview(null); setFile(null); setCpfrDate(''); }} disabled={busy}>Cancel</SecondaryButton>
           </div>
         </>
       )}
@@ -297,13 +345,19 @@ export default function Upload() {
           <UploadCard
             fileType="inventory"
             title="Inventory Upload"
-            description="Updates each store's on-hand stock to match the quantities in this file (overwrites, does not add to existing stock)."
+            description="Updates each store's on-hand stock to match the quantities in this file (overwrites, does not add to existing stock). Any product a store carried before that isn't in this file anymore is zeroed out, not left stale."
             onCommitted={reloadHistory}
           />
           <UploadCard
             fileType="sales"
             title="Sales-per-Serial-No Upload"
             description="Summarizes total sell-out per product (across all stores) for one week. The week is detected automatically from the file's dates."
+            onCommitted={reloadHistory}
+          />
+          <UploadCard
+            fileType="cpfr"
+            title="CPFR Upload"
+            description={'Loads a CPFR cycle file (e.g. a "BSD Alias" export) into the CPFR sheet. Rows sharing an alias are combined into one quantity, added to that alias’s existing Weekly CPFR value. This file has no date column, so you pick the week it applies to at upload time.'}
             onCommitted={reloadHistory}
           />
           <UploadHistory history={history} />

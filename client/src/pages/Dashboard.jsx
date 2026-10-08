@@ -194,7 +194,7 @@ export default function Dashboard() {
               <SecondaryButton onClick={exportAttentionCsv} disabled={preds.length === 0}>Export CSV</SecondaryButton>
             </div>
             {preds.length === 0 ? (
-              <p className="text-sm text-gray-500 dark:text-gray-400">No prediction data yet — upload inventory and sales files, then visit Sales to generate a prediction.</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">No prediction data yet — upload inventory and sales files, then visit CPFR to generate a prediction.</p>
             ) : (
               <>
                 <div className="flex flex-wrap items-end gap-4 mb-4">

@@ -3,6 +3,7 @@ import multer from 'multer';
 import crypto from 'node:crypto';
 import { db } from '../db.js';
 import { parseCsvBuffer, rowsToObjects, detectCadence, retailWeekInfo } from '../lib/csv.js';
+import { aliasKey } from '../lib/alias.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const router = Router();
@@ -29,6 +30,18 @@ const SALES_FIELDS = [
   { key: 'saleDate', label: 'Sale Date', required: true },
 ];
 
+// CPFR cycle files (e.g. a monthly "BSD ALIAS (FOR SIMULATION)" export) carry one
+// planning quantity per alias and no date/week column at all — the week this applies
+// to is picked by hand at commit time instead of detected from the file. The alias
+// column is re-normalized through the same `aliasKey()` the rest of the app uses
+// (derived from Device Model text), so an alias spelled "Galaxy A07 LTE (4+128GB)"
+// in the file lines up with the identical alias computed from real inventory data,
+// not a second, differently-cased row that never shows up anywhere.
+const CPFR_FIELDS = [
+  { key: 'alias', label: 'Alias', required: true },
+  { key: 'quantity', label: 'Quantity', required: true },
+];
+
 // Prepared once and reused across every row of every upload — re-preparing inside a
 // per-row loop for large files (tens of thousands of rows) is what was crashing the
 // experimental node:sqlite binding.
@@ -48,6 +61,8 @@ const stmt = {
     VALUES (?, ?, ?, ?)
     ON CONFLICT(store_id, product_id) DO UPDATE SET quantity = excluded.quantity, updated_at = excluded.updated_at
   `),
+  getStockForStore: db.prepare('SELECT product_id AS productId, quantity FROM store_stock WHERE store_id = ?'),
+  zeroStock: db.prepare('UPDATE store_stock SET quantity = 0, updated_at = ? WHERE store_id = ? AND product_id = ?'),
   insertUpload: db.prepare('INSERT INTO uploads (filename, file_type, uploaded_at, row_count, week_number) VALUES (?, ?, ?, ?, ?)'),
   upsertSalesWeekly: db.prepare(`
     INSERT INTO sales_weekly (product_id, week_number, week_start, week_end, total_qty)
@@ -69,14 +84,20 @@ function normalize(s) {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+// A handful of common header abbreviations that don't substring-match their field's
+// own key/label (e.g. a column literally named "Qty" or "AUG CPFR QTY" won't contain
+// "quantity"), so auto-mapping would otherwise miss them every time.
+const FIELD_SYNONYMS = { quantity: ['qty'] };
+
 function autoMapping(fields, headers) {
   const mapping = {};
   for (const field of fields) {
     const key = normalize(field.key);
     const label = normalize(field.label.replace(/\(.*\)/, ''));
+    const synonyms = (FIELD_SYNONYMS[field.key] || []).map(normalize);
     const match = headers.find((h) => {
       const n = normalize(h);
-      return n === key || n === label || n.includes(key) || key.includes(n) || n.includes(label);
+      return n === key || n === label || n.includes(key) || key.includes(n) || n.includes(label) || synonyms.some((s) => n.includes(s));
     });
     if (match) mapping[field.key] = match;
   }
@@ -87,13 +108,14 @@ router.get('/fields/:fileType', (req, res) => {
   const { fileType } = req.params;
   if (fileType === 'inventory') return res.json({ fields: INVENTORY_FIELDS });
   if (fileType === 'sales') return res.json({ fields: SALES_FIELDS });
+  if (fileType === 'cpfr') return res.json({ fields: CPFR_FIELDS });
   return res.status(400).json({ error: 'Unknown file type' });
 });
 
 router.post('/preview', upload.single('file'), (req, res) => {
   const { fileType } = req.body;
-  if (!['inventory', 'sales'].includes(fileType)) {
-    return res.status(400).json({ error: 'fileType must be "inventory" or "sales"' });
+  if (!['inventory', 'sales', 'cpfr'].includes(fileType)) {
+    return res.status(400).json({ error: 'fileType must be "inventory", "sales", or "cpfr"' });
   }
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
@@ -114,7 +136,7 @@ router.post('/preview', upload.single('file'), (req, res) => {
     createdAt: Date.now(),
   });
 
-  const fields = fileType === 'inventory' ? INVENTORY_FIELDS : SALES_FIELDS;
+  const fields = fileType === 'inventory' ? INVENTORY_FIELDS : fileType === 'sales' ? SALES_FIELDS : CPFR_FIELDS;
   const sig = headersSignature(headers);
   const saved = db.prepare('SELECT column_mapping FROM import_templates WHERE file_type = ? AND headers_signature = ?').get(fileType, sig);
 
@@ -180,6 +202,8 @@ router.post('/inventory/commit', (req, res) => {
   const objects = rowsToObjects(pending.headers, pending.rows);
   const now = new Date().toISOString();
   let rowCount = 0;
+  let zeroedCount = 0;
+  const seenByStore = new Map(); // storeId -> Set<productId> mentioned in this upload
 
   db.exec('BEGIN');
   try {
@@ -199,6 +223,22 @@ router.post('/inventory/commit', (req, res) => {
 
       stmt.upsertStock.run(storeId, productId, quantity, now);
       rowCount += 1;
+
+      if (!seenByStore.has(storeId)) seenByStore.set(storeId, new Set());
+      seenByStore.get(storeId).add(productId);
+    }
+
+    // This upload is the authoritative new snapshot for every store it mentions — a
+    // product that store carried before but isn't in this file anymore is treated as
+    // no longer stocked there (zeroed out), rather than silently keeping its last
+    // nonzero on-hand forever. Only touches stores this upload actually covers.
+    for (const [storeId, seenProductIds] of seenByStore) {
+      for (const row of stmt.getStockForStore.all(storeId)) {
+        if (!seenProductIds.has(row.productId) && row.quantity !== 0) {
+          stmt.zeroStock.run(now, storeId, row.productId);
+          zeroedCount += 1;
+        }
+      }
     }
 
     stmt.insertUpload.run(pending.filename, 'inventory', now, rowCount, null);
@@ -210,7 +250,7 @@ router.post('/inventory/commit', (req, res) => {
 
   if (saveAsTemplate) saveTemplate('inventory', pending.headers, mapping);
   pendingUploads.delete(uploadId);
-  res.json({ ok: true, rowsUpdated: rowCount });
+  res.json({ ok: true, rowsUpdated: rowCount, rowsZeroed: zeroedCount });
 });
 
 router.post('/sales/commit', (req, res) => {
@@ -310,6 +350,72 @@ router.post('/sales/commit', (req, res) => {
     weekEnd: cadence.max.toISOString(),
     productsUpdated: productTotals.size,
   });
+});
+
+// CPFR cycle files have no date/week column (just one quantity per alias for the
+// whole cycle), so the week is picked by hand at commit time — then resolved through
+// the same retail-week math the sales upload uses, so "pick a date" and "pick a week"
+// land on the identical week_number. Rows sharing an alias (after re-normalizing
+// through `aliasKey()`) are summed into one quantity, which is *added* to whatever
+// Weekly CPFR that alias/week already had (an earlier upload, or a manual edit) —
+// not a blind overwrite, since separate uploads/edits can legitimately stack within
+// one planning cycle.
+router.post('/cpfr/commit', (req, res) => {
+  const { uploadId, mapping, date, saveAsTemplate = true } = req.body;
+  const pending = pendingUploads.get(uploadId);
+  if (!pending || pending.fileType !== 'cpfr') {
+    return res.status(400).json({ error: 'Upload not found or expired. Please re-upload the file.' });
+  }
+
+  try {
+    requireMapping(CPFR_FIELDS, mapping);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  if (!date) return res.status(400).json({ error: 'A date is required, to identify which week this upload applies to.' });
+  const parsedDate = new Date(date);
+  if (Number.isNaN(parsedDate.getTime())) return res.status(400).json({ error: 'Invalid date' });
+
+  const { retailYear, retailWeek } = retailWeekInfo(parsedDate);
+  const weekNumber = retailYear * 100 + retailWeek;
+  const weekLabel = `${retailYear}-W${String(retailWeek).padStart(2, '0')}`;
+
+  const objects = rowsToObjects(pending.headers, pending.rows);
+  const totalsByAlias = new Map();
+  let skippedCount = 0;
+  for (const obj of objects) {
+    const rawAlias = obj[mapping.alias];
+    if (!rawAlias) continue;
+    const qty = Number(obj[mapping.quantity]);
+    if (Number.isNaN(qty)) { skippedCount += 1; continue; }
+    const alias = aliasKey(rawAlias);
+    totalsByAlias.set(alias, (totalsByAlias.get(alias) || 0) + qty);
+  }
+
+  const now = new Date().toISOString();
+  db.exec('BEGIN');
+  try {
+    for (const [alias, qty] of totalsByAlias) {
+      const existing = db.prepare('SELECT weekly_cpfr AS weeklyCpfr FROM cpfr WHERE alias = ? AND week_number = ?').get(alias, weekNumber);
+      const nextWeeklyCpfr = (existing?.weeklyCpfr ?? 0) + qty;
+      db.prepare(`
+        INSERT INTO cpfr (alias, week_number, weekly_cpfr, actual_do)
+        VALUES (?, ?, ?, 0)
+        ON CONFLICT(alias, week_number) DO UPDATE SET weekly_cpfr = excluded.weekly_cpfr
+      `).run(alias, weekNumber, nextWeeklyCpfr);
+    }
+
+    stmt.insertUpload.run(pending.filename, 'cpfr', now, totalsByAlias.size, weekNumber);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: err.message });
+  }
+
+  if (saveAsTemplate) saveTemplate('cpfr', pending.headers, mapping);
+  pendingUploads.delete(uploadId);
+  res.json({ ok: true, weekNumber, weekLabel, aliasesUpdated: totalsByAlias.size, skippedCount });
 });
 
 router.get('/history', (req, res) => {

@@ -28,12 +28,14 @@ Override the exposed ports with `SERVER_PORT` / `CLIENT_PORT` env vars if 4000/8
 ## How it works
 
 1. **Upload** — upload your inventory CSV (updates each store's on-hand stock — overwrites, doesn't add) and your sales-per-serialno CSV (one week at a time; the week is detected automatically from the dates, Sunday–Saturday). Both go through a preview → map columns → confirm flow, so any CSV header names work. The column mapping is remembered per file format for next time.
-2. **Stock View** — pick a store to see its current on-hand stock.
-3. **Sales** — sell-out per product, summed across stores, by week. Click **Generate Prediction** to see the restock health score per device (Healthy / Moderate / Critical), with and without planned CPFR.
-4. **CPFR** — plan weekly CPFR quantities per device; see the suggested amount needed to stay Healthy, log actual delivery orders (DO), and see Total CPFR.
-5. **Balance** — track monthly balance against CPFR commitments; Unserved carries forward month to month.
-6. **Product Order (PO)** — Unserved (from Balance) plus Hold and Replace quantities roll up into Total for PO.
-7. **RSI** — mark which store(s) are top performers for the month; any RSI store stocking a Critical-level device is flagged.
+2. **Stock View** — pick a store to see its current on-hand stock; tick Flagship devices here.
+3. **CPFR** — a real spreadsheet (name box, formula bar, click-to-select cells, live formula recalculation — not just a table styled to look like one), keyed by device, combining what used to be separate Sales, CPFR, Balance and Product Order pages:
+   - Sell-out per product, summed across stores, by week — summarized automatically from your sales uploads — plus the restock health score (Healthy / Moderate / Critical), with and without planned CPFR, all as real formulas (`=AVERAGE(...)`, `=IF(...)`, `=IFERROR(...)`).
+   - Plan weekly CPFR quantities per device; see the suggested amount needed to stay Healthy, log actual delivery orders (DO), and see Total CPFR.
+   - Track monthly balance against CPFR commitments; Unserved is a live formula that carries forward month to month.
+   - Unserved (from Balance) plus Hold and Replace quantities roll up into Total for PO.
+   - Shaded (amber) cells are editable: select one, type a value into the formula bar, press Enter — everything that depends on it recalculates immediately and saves in the background, no confirmation dialogs.
+4. **RSI** — mark which store(s) are top performers for the month; any RSI store stocking a Critical-level device is flagged.
 
 Sample CSVs for trying it out are in `server/sample-*.csv`.
 

@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { computeBalanceTable } from '../lib/balanceTable.js';
-import { getItemDescMaps } from '../lib/itemDesc.js';
 
 const router = Router();
 
@@ -21,17 +20,14 @@ router.get('/balance', (req, res) => {
 });
 
 router.put('/balance', (req, res) => {
-  const { itemDesc, month, monthBalance } = req.body;
-  if (!itemDesc || !month) return res.status(400).json({ error: 'itemDesc and month are required' });
-
-  const { toDeviceModel } = getItemDescMaps();
-  const deviceModel = toDeviceModel.get(itemDesc) || itemDesc;
+  const { alias, month, monthBalance } = req.body;
+  if (!alias || !month) return res.status(400).json({ error: 'alias and month are required' });
 
   db.prepare(`
-    INSERT INTO balance (device_model, month, month_balance)
+    INSERT INTO balance (alias, month, month_balance)
     VALUES (?, ?, ?)
-    ON CONFLICT(device_model, month) DO UPDATE SET month_balance = excluded.month_balance
-  `).run(deviceModel, month, Number(monthBalance) || 0);
+    ON CONFLICT(alias, month) DO UPDATE SET month_balance = excluded.month_balance
+  `).run(alias, month, Number(monthBalance) || 0);
 
   res.json({ ok: true });
 });

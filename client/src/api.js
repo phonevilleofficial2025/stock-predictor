@@ -37,6 +37,7 @@ export const api = {
   },
   commitInventory: (payload) => request('/uploads/inventory/commit', { method: 'POST', body: JSON.stringify(payload) }),
   commitSales: (payload) => request('/uploads/sales/commit', { method: 'POST', body: JSON.stringify(payload) }),
+  commitCpfr: (payload) => request('/uploads/cpfr/commit', { method: 'POST', body: JSON.stringify(payload) }),
   uploadHistory: () => request('/uploads/history'),
 
   // Stock
@@ -50,19 +51,24 @@ export const api = {
   getSales: () => request('/sales'),
   getPredictions: () => request('/predictions'),
 
-  // CPFR
-  getCpfr: (week) => request(`/cpfr${week ? `?week=${week}` : ''}`),
+  // CPFR — one sheet, every week at once (no "planning week" selector). Plans by
+  // alias (every color/SKU sharing a Device Model prefix, combined), not per
+  // individual product — payloads carry `alias`, not `itemDesc`/`deviceModel`.
+  getCpfr: () => request('/cpfr'),
   putCpfr: (payload) => request('/cpfr', { method: 'PUT', body: JSON.stringify(payload) }),
 
-  // Balance
-  getMonths: () => request('/months'),
-  addMonth: (payload) => request('/months', { method: 'POST', body: JSON.stringify(payload) }),
+  // Balance — every month of the current year, side by side, no month picker
   getBalance: () => request('/balance'),
   putBalance: (payload) => request('/balance', { method: 'PUT', body: JSON.stringify(payload) }),
 
-  // Product Order
-  getPo: (month) => request(`/po${month ? `?month=${month}` : ''}`),
+  // Product Order — every tracked month at once (no month picker on the CPFR sheet)
+  getPoAll: () => request('/po/all'),
   putPo: (payload) => request('/po', { method: 'PUT', body: JSON.stringify(payload) }),
+
+  // Device master data (pricing, cost, promo copy, SW target, on-hand system/unserved
+  // split, cumulative Actual DO) — the CPFR sheet columns no upload feed populates.
+  getDeviceMaster: () => request('/device-master'),
+  putDeviceMaster: (payload) => request('/device-master', { method: 'PUT', body: JSON.stringify(payload) }),
 
   // RSI
   getRsi: (month) => request(`/rsi?month=${month}`),

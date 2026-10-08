@@ -4,10 +4,7 @@ import { api } from './api.js';
 import Dashboard from './pages/Dashboard.jsx';
 import Upload from './pages/Upload.jsx';
 import StockView from './pages/StockView.jsx';
-import Sales from './pages/Sales.jsx';
 import Cpfr from './pages/Cpfr.jsx';
-import Balance from './pages/Balance.jsx';
-import ProductOrder from './pages/ProductOrder.jsx';
 import Rsi from './pages/Rsi.jsx';
 import Guide from './pages/Guide.jsx';
 import Login from './pages/Login.jsx';
@@ -19,13 +16,15 @@ const tabs = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/upload', label: 'Upload' },
   { to: '/stock', label: 'Stock View' },
-  { to: '/sales', label: 'Sales' },
   { to: '/cpfr', label: 'CPFR' },
-  { to: '/balance', label: 'Balance' },
-  { to: '/po', label: 'Product Order' },
   { to: '/rsi', label: 'RSI' },
-  { to: '/guide', label: 'Guide' },
 ];
+
+// Sales, Balance and Product Order used to be separate tabs; they're now sections of
+// the one CPFR sheet (an actual spreadsheet — formula bar, cell selection, live
+// recalculation). Keep old links working. Guide is still reachable directly (e.g.
+// /guide) even though it's no longer in the tab bar.
+const legacyRedirects = ['/sales', '/balance', '/po', '/simulation'];
 
 function navLinkClass({ isActive }) {
   return isActive
@@ -144,11 +143,11 @@ export default function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/upload" element={<Upload />} />
             <Route path="/stock" element={<StockView />} />
-            <Route path="/sales" element={<Sales />} />
             <Route path="/cpfr" element={<Cpfr />} />
-            <Route path="/balance" element={<Balance />} />
-            <Route path="/po" element={<ProductOrder />} />
             <Route path="/rsi" element={<Rsi />} />
+            {legacyRedirects.map((path) => (
+              <Route key={path} path={path} element={<Navigate to="/cpfr" replace />} />
+            ))}
             <Route path="/guide" element={<Guide />} />
             <Route path="/settings" element={<Settings username={username} onUsernameChanged={setUsername} />} />
           </Routes>
