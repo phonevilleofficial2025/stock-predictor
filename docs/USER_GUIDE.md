@@ -18,12 +18,13 @@ Every table page (Stock View, CPFR, Dashboard, RSI) has:
 Uploading, Stock View and RSI edits always ask for confirmation first. Editing a cell on the CPFR sheet (any shaded/amber cell — Weekly CPFR, Actual DO, Balance, Hold, Replace) saves instantly in the background instead — a small dot shows on the cell while it saves, and turns red (briefly) if the save failed.
 
 ## Upload
-1. Use the **Inventory Upload** or **Sales-per-Serial-No Upload** card and select a CSV file (max 20 MB).
+1. Use the **Inventory Upload**, **Sales-per-Serial-No Upload**, or **CPFR Upload** card and select a CSV file (max 20 MB).
 2. A **preview** shows all rows (scrollable, searchable, zoomable). Check the column mapping; columns are auto-matched and remembered for the next file with the same headers.
 3. Click import and confirm.
 
 - **Inventory** fields: Store, Product/SKU, Device Model, Quantity (required); Variant Name, Category, Brand (optional). Importing **overwrites** each store's on-hand quantity for those SKUs. New stores and products are created automatically.
 - **Sales** fields: Product/SKU, Device Model, Store, Sale Date (required); Serial No (optional). Each row is one unit sold. The file must cover **one week**; the week is detected automatically from the dates using retail weeks (**Sunday–Saturday**, e.g. Sep 6 – Sep 12). Re-uploading the same week replaces it.
+- **CPFR** fields: Alias, Quantity (required) — a monthly CPFR cycle export (e.g. a "BSD Alias" file) with one planning quantity per alias and no date column. Pick any date that falls in the week you're planning; rows sharing an alias are summed and **added** on top of that week's existing Weekly CPFR value (not a blind overwrite, since separate uploads/edits can legitimately stack).
 
 ## Stock View
 - Pick a store, or **All Stores** for the overall summary.
@@ -39,6 +40,8 @@ Plans by **alias**, not by individual color/SKU: every color and storage-identic
 Weekly Sell-Out and CPFR span week 1 through the current year's last week automatically — no week selector, no manual setup; scroll right (or zoom out, or use full screen) to see more weeks at once. Balance and Product Order show every month of the year side by side — no month picker either.
 
 Alias, On Hand, weekly sell-out history (one column per week of the year, summarized automatically from your sales uploads across every variant sharing the alias — 0 until that week's upload arrives), Avg 2-Wk (averages the two most recent weeks), the no-CPFR prediction (Est. Sellout / Est. On Hand / Score / Status), **Suggestion** (quantity needed to reach Healthy), a cumulative **Actual DO** column, one editable **CPFR** column per week plus a **TOTAL CPFR** (sum of every week's CPFR − Actual DO), and one Total CPFR / **Balance** / Unserved / **Hold** / **Replace** / **Replace 2** / **Replace 4** / Total for PO column group per month (Unserved is a live formula that carries forward: `Unserved[month] = Unserved[previous] + Total CPFR[month] − Balance[month]`; Total for PO = Unserved + Hold + Replace + Replace 2 + Replace 4). Cells with a green corner are computed formulas; shaded (amber) cells are editable — select one, type a value into the formula bar, press Enter.
+
+Further right, the sheet also carries every column from the source CPFR simulation workbook that has no upload feed behind it — Regular/Promo SRP, Cost, Promo text, SW (sell-through target) and its derived Min SW, two SA Score placeholders, a Stocks snapshot, the on-hand System/Unserved split, and the peso-valuation columns computed from Cost. These are plain editable fields (backed by a per-alias `device_master` record) you fill in directly on the sheet — nothing automated feeds them, same as in the source workbook.
 
 Dashboard's CPFR-adjusted prediction is still per individual device — an alias's planned CPFR quantity is split back across its member devices proportional to each one's recent sell-out share (an even split if none has sell-out history yet).
 

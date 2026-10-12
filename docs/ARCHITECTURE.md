@@ -5,7 +5,7 @@
 ```mermaid
 flowchart LR
   subgraph Browser
-    SPA["React SPA<br/>(Vite + Tailwind + react-router)"]
+    SPA["React SPA<br/>(Vite + Tailwind + react-router)<br/>+ embedded spreadsheet engine"]
   end
   subgraph Docker["Docker Compose"]
     NGINX["client container<br/>nginx: static files + /api proxy"]
@@ -51,8 +51,14 @@ classDiagram
     requireAuth()
     updateAccount()
   }
+  class alias {
+    aliasKey()
+  }
   class deviceMetrics {
     getDeviceMetrics()
+  }
+  class aliasMetrics {
+    getAliasMetrics()
   }
   class predictionsLib {
     computeScore()
@@ -70,9 +76,7 @@ classDiagram
     parseCsvBuffer()
     detectCadence()
     retailWeekInfo()
-  }
-  class itemDesc {
-    getItemDescMaps()
+    fullYearWeeks()
   }
   class uploadsRoute
   class stockRoute
@@ -82,6 +86,7 @@ classDiagram
   class balanceRoute
   class poRoute
   class rsiRoute
+  class deviceMasterRoute
   class authRoute
 
   index --> authRoute
@@ -93,23 +98,29 @@ classDiagram
   index --> balanceRoute
   index --> poRoute
   index --> rsiRoute
+  index --> deviceMasterRoute
   authRoute --> authLib
   uploadsRoute --> csvLib
+  uploadsRoute --> alias
   uploadsRoute --> db
   stockRoute --> deviceMetrics
   stockRoute --> predictionsLib
-  salesRoute --> deviceMetrics
+  salesRoute --> alias
+  salesRoute --> aliasMetrics
+  salesRoute --> csvLib
   predictionsRoute --> deviceMetrics
+  predictionsRoute --> alias
   predictionsRoute --> predictionsLib
-  cpfrRoute --> deviceMetrics
+  cpfrRoute --> aliasMetrics
   cpfrRoute --> predictionsLib
-  cpfrRoute --> itemDesc
+  cpfrRoute --> csvLib
   balanceRoute --> balanceTable
   poRoute --> balanceTable
+  deviceMasterRoute --> aliasMetrics
   balanceTable --> balanceLib
-  balanceTable --> deviceMetrics
-  rsiRoute --> deviceMetrics
-  rsiRoute --> predictionsLib
+  balanceTable --> aliasMetrics
+  aliasMetrics --> deviceMetrics
+  aliasMetrics --> alias
   deviceMetrics --> db
   authLib --> db
 ```
@@ -118,27 +129,27 @@ classDiagram
 
 ```mermaid
 flowchart TB
-  main["main.jsx"] --> App["App.jsx<br/>auth gate + nav + routes"]
+  main["main.jsx"] --> App["App.jsx<br/>auth gate + nav + routes<br/>legacy /sales,/balance,/po,/simulation redirect to /cpfr"]
   App --> Login
   App --> ConfirmProvider
   App --> ProfileMenu["ProfileMenu<br/>theme toggle, settings, sign out"]
   ConfirmProvider --> Pages
   subgraph Pages
     Dashboard
-    Upload
-    StockView
-    Sales
-    Cpfr
-    Balance
-    ProductOrder
+    Upload["Upload<br/>(inventory / sales / cpfr cards)"]
+    StockView["StockView<br/>(+ client-side Alias View)"]
+    Cpfr["Cpfr<br/>(one spreadsheet: Sales+CPFR+Balance+PO)"]
     Rsi
     Guide
     Settings
   end
+  Cpfr --> cpfrWorkbook["utils/cpfrWorkbook.js<br/>builds workbook cells/formulas"]
+  cpfrWorkbook --> ExcelSheet["components/excel/ExcelSheet.jsx"]
+  ExcelSheet --> engine["components/excel/engine.js<br/>formula parser/evaluator, grid rendering,<br/>frozen panes, scrollable windows, zoom/fullscreen"]
   Pages --> hooks["hooks/useFilteredTable"]
   Pages --> comps["components: TableToolbar, Pagination,<br/>TableFrame/ZoomArea, ConfirmDialog, Card,<br/>PageHeader, StatusBadge, Badge"]
   Pages --> api["api.js<br/>fetch wrapper, 401 handling"]
-  Pages --> utils["utils/csv.js, utils/week.js"]
+  Pages --> utils["utils/csv.js, utils/week.js, utils/formulas.js"]
 ```
 
 ## 5. Sequence: login
@@ -160,7 +171,7 @@ sequenceDiagram
   Note over C,S: any 401 fires auth:unauthorized and shows the login screen
 ```
 
-## 6. Sequence: sales upload (preview, then commit)
+## 6. Sequence: upload (preview, then commit)
 
 ```mermaid
 sequenceDiagram
@@ -169,37 +180,66 @@ sequenceDiagram
   participant S as uploads route
   participant M as pendingUploads (memory)
   participant D as SQLite
-  U->>C: choose CSV, type = sales
+  U->>C: choose CSV, type = inventory | sales | cpfr
   C->>S: POST /api/uploads/preview (multipart)
   S->>S: parseCsvBuffer, autoMapping or saved template
   S->>M: store rows under uploadId
   S-->>C: headers, previewRows, suggestedMapping
-  U->>C: adjust mapping, click Import
+  U->>C: adjust mapping (+ pick a date, for cpfr)
   C->>U: confirm dialog
-  C->>S: POST /api/uploads/sales/commit
-  S->>S: detectCadence (must be weekly)
-  S->>S: retailWeekInfo gives weekNumber = year*100+week
-  S->>D: BEGIN, upsert stores/products/sales_weekly/store_sales_monthly, COMMIT
-  S->>D: save import template
-  S-->>C: weekLabel, productsUpdated
+  C->>S: POST /api/uploads/{inventory|sales|cpfr}/commit
+  alt inventory
+    S->>D: BEGIN, upsert stores/products, OVERWRITE store_stock,<br/>zero anything this upload doesn't mention, COMMIT
+  else sales
+    S->>S: detectCadence (must be weekly), retailWeekInfo -> weekNumber
+    S->>D: BEGIN, upsert sales_weekly/store_sales_monthly, COMMIT
+  else cpfr
+    S->>S: resolve week from the picked date, sum rows by aliasKey()
+    S->>D: BEGIN, add onto existing weekly_cpfr per alias/week, COMMIT
+  end
+  S->>D: save import template + uploads log
+  S-->>C: result (rowsUpdated / weekLabel+productsUpdated / weekLabel+aliasesUpdated)
 ```
 
-## 7. Sequence: prediction
+## 7. Sequence: CPFR sheet load and edit
 
 ```mermaid
 sequenceDiagram
-  participant C as Sales / Dashboard
+  participant C as Cpfr page
+  participant S as Express routes
+  participant AM as aliasMetrics/deviceMetrics
+  participant D as SQLite
+  C->>S: GET /cpfr, /sales, /balance, /po/all, /device-master (parallel)
+  S->>AM: getAliasMetrics() (sums per-device onHand/avg2wk to alias level)
+  AM->>D: query products/store_stock/sales_weekly
+  S-->>C: per-endpoint alias rows
+  C->>C: mergeRows() joins all five responses by alias
+  C->>C: buildCpfrWorkbook() lays out one sheet (cells + formulas)
+  C->>C: ExcelSheet mounts engine.js, formulas evaluate client-side
+  Note over C: user edits a shaded (editable) cell
+  C->>S: PUT /cpfr | /balance | /po | /device-master (field-specific)
+  S->>D: upsert row
+  S-->>C: new value
+  C->>C: patch React state; engine recalculates dependent formula cells
+```
+
+## 8. Sequence: prediction (Dashboard)
+
+```mermaid
+sequenceDiagram
+  participant C as Dashboard
   participant R as predictions route
   participant M as deviceMetrics
   participant P as predictions lib
   C->>R: GET /api/predictions
   R->>M: getDeviceMetrics()
   M-->>R: per device onHand, avg2wk, isFlagship
-  R->>P: computeScore, classifyStatus, computeSuggestion
+  R->>R: loadCpfrByDevice(): alias-level CPFR split back down per device,<br/>proportional to each device's avg2wk share
+  R->>P: computeScore, classifyStatus, computeSuggestion, splitSuggestionByVariant
   R-->>C: predictions (score, status, with-CPFR, suggestion, variant split)
 ```
 
-## 8. State diagram: device status
+## 9. State diagram: device status
 
 ```mermaid
 stateDiagram-v2
