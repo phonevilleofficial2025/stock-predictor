@@ -158,8 +158,21 @@ function ensureBaseStyle() {
 .xlapp .xl-headrow{display:flex;align-items:flex-start;position:sticky;top:0;z-index:6}
 .xlapp .xl-bodyrow{display:flex;align-items:flex-start}
 .xlapp .xl-window-head{overflow:hidden;flex-shrink:0}
-.xlapp .xl-window-body{overflow-x:auto;flex-shrink:0}
-.xlapp .xl-window-body::-webkit-scrollbar{height:8px}
+/* The body still scrolls (wheel/trackpad/keyboard all keep working) but its own
+   scrollbar is hidden — the visible, grabbable one lives in .xl-topscrollrow
+   instead, right under the header instead of below every row. */
+.xlapp .xl-window-body{overflow-x:auto;flex-shrink:0;scrollbar-width:none}
+.xlapp .xl-window-body::-webkit-scrollbar{display:none}
+.xlapp .xl-topscrollrow{display:flex;align-items:flex-start;position:sticky;z-index:6}
+.xlapp .xl-window-topscroll{overflow-x:auto;flex-shrink:0;height:16px;scrollbar-width:auto;scrollbar-color:#9ca3af #e5e7eb}
+.xlapp .xl-window-topscroll::-webkit-scrollbar{height:14px}
+.xlapp .xl-window-topscroll::-webkit-scrollbar-track{background:#e5e7eb;border-radius:7px}
+.xlapp .xl-window-topscroll::-webkit-scrollbar-thumb{background:#9ca3af;border-radius:7px;border:3px solid #e5e7eb}
+.xlapp .xl-window-topscroll::-webkit-scrollbar-thumb:hover{background:#6b7280}
+.dark .xlapp .xl-window-topscroll{scrollbar-color:#6b7280 #1f2937}
+.dark .xlapp .xl-window-topscroll::-webkit-scrollbar-track{background:#1f2937}
+.dark .xlapp .xl-window-topscroll::-webkit-scrollbar-thumb{background:#6b7280;border-color:#1f2937}
+.dark .xlapp .xl-window-topscroll::-webkit-scrollbar-thumb:hover{background:#9ca3af}
 .xlapp .xl-hdr-select{background:rgba(255,255,255,.15);color:inherit;border:1px solid rgba(255,255,255,.4);border-radius:4px;padding:1px 4px;font:inherit;font-weight:700;cursor:pointer}
 .xlapp .xl-hdr-select option{color:#1f2937;background:#fff}
 .xlapp table{border-collapse:collapse;table-layout:fixed}
@@ -437,20 +450,47 @@ export function mountExcelApp(container, initialWorkbookData, opts = {}) {
       return `<div class="${className}">${parts.join('')}</div>`;
     }
 
+    // A thin, sticky strip of real (visible, draggable) horizontal scrollbars — one
+    // per window block — sitting right under the header instead of below every row,
+    // so scrolling a window with many rows doesn't require scrolling all the way
+    // down to reach its scrollbar first. Frozen/flow blocks get a plain spacer here
+    // (same width as their block) just to keep columns lined up with the bands below.
+    function renderTopScrollBand() {
+      if (!blocks.some((b) => b.type === 'window')) return '';
+      const parts = blocks.map((b) => {
+        const totalWidth = b.cols.reduce((a, c) => a + W(c), 0);
+        if (b.type !== 'window') return `<div style="width:${totalWidth}px;flex-shrink:0"></div>`;
+        return `<div class="xl-window-topscroll" style="width:${b.width}px" data-win="${b.cols[0]}"><div style="width:${totalWidth}px;height:1px"></div></div>`;
+      });
+      let headTotalHeight = 0;
+      for (let r = 1; r <= sh.fr; r++) { if (!hid.has(r)) headTotalHeight += RH(r); }
+      return `<div class="xl-topscrollrow" style="top:${headTotalHeight}px">${parts.join('')}</div>`;
+    }
+
     const hasHead = sh.fr > 0;
     const headHtml = hasHead ? renderBand('xl-headrow', 1, sh.fr, true, 'xl-window-head') : '';
+    const topScrollHtml = renderTopScrollBand();
     const bodyHtml = renderBand('xl-bodyrow', sh.fr + 1, sh.maxr, false, 'xl-window-body');
-    return `<div class="xl-sheet">${headHtml}${bodyHtml}</div>`;
+    return `<div class="xl-sheet">${headHtml}${topScrollHtml}${bodyHtml}</div>`;
   }
 
-  // After (re)rendering, keep each window's head scroll position mirrored to its
-  // body's — the body is the one with the real (visible) horizontal scrollbar.
+  // After (re)rendering, keep each window's head and top-scrollbar positions
+  // mirrored to its body's scroll position, and the top scrollbar mirrored back to
+  // the body too — the top strip is the one the user actually drags now.
   function wireWindowSync(root) {
     root.querySelectorAll('.xl-window-body').forEach((body) => {
       const win = body.dataset.win;
       const head = root.querySelector(`.xl-window-head[data-win="${win}"]`);
-      if (!head) return;
-      body.addEventListener('scroll', () => { head.scrollLeft = body.scrollLeft; });
+      const top = root.querySelector(`.xl-window-topscroll[data-win="${win}"]`);
+      body.addEventListener('scroll', () => {
+        if (head) head.scrollLeft = body.scrollLeft;
+        if (top && top.scrollLeft !== body.scrollLeft) top.scrollLeft = body.scrollLeft;
+      });
+      if (top) {
+        top.addEventListener('scroll', () => {
+          if (body.scrollLeft !== top.scrollLeft) body.scrollLeft = top.scrollLeft;
+        });
+      }
     });
   }
 

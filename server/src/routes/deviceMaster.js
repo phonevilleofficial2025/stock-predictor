@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { pool } from '../db.js';
 import { getAliasMetrics } from '../lib/aliasMetrics.js';
+import { asyncHandler } from '../lib/asyncHandler.js';
 
 const router = Router();
 
@@ -26,11 +27,10 @@ const FIELD_TO_COLUMN = {
 };
 const TEXT_FIELDS = new Set(['promoText']);
 
-router.get('/device-master', (req, res) => {
-  const { aliases } = getAliasMetrics();
-  const masterByAlias = new Map(
-    db.prepare('SELECT * FROM device_master').all().map((r) => [r.alias, r]),
-  );
+router.get('/device-master', asyncHandler(async (req, res) => {
+  const { aliases } = await getAliasMetrics();
+  const { rows: masterRows } = await pool.query('SELECT * FROM device_master');
+  const masterByAlias = new Map(masterRows.map((r) => [r.alias, r]));
 
   const rows = Array.from(aliases.keys()).map((alias) => {
     const m = masterByAlias.get(alias);
@@ -51,9 +51,9 @@ router.get('/device-master', (req, res) => {
   }).sort((a, b) => a.alias.localeCompare(b.alias));
 
   res.json({ rows });
-});
+}));
 
-router.put('/device-master', (req, res) => {
+router.put('/device-master', asyncHandler(async (req, res) => {
   const { alias, field, value } = req.body;
   if (!alias || !field) return res.status(400).json({ error: 'alias and field are required' });
   const column = FIELD_TO_COLUMN[field];
@@ -61,13 +61,13 @@ router.put('/device-master', (req, res) => {
 
   const nextValue = TEXT_FIELDS.has(field) ? String(value ?? '') : Number(value) || 0;
 
-  db.prepare(`
+  await pool.query(`
     INSERT INTO device_master (alias, ${column})
-    VALUES (?, ?)
+    VALUES ($1, $2)
     ON CONFLICT(alias) DO UPDATE SET ${column} = excluded.${column}
-  `).run(alias, nextValue);
+  `, [alias, nextValue]);
 
   res.json({ ok: true, alias, field, value: nextValue });
-});
+}));
 
 export default router;

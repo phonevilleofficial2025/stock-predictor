@@ -8,8 +8,8 @@ import { aliasKey } from './alias.js';
 // if any member is flagged, and avg2wk sums too — valid because avg2wk is itself
 // (week1+week2)/2 for each device, and summing averages over the *same* two weeks
 // equals the average of the summed weeks ((Σweek1 + Σweek2)/2), not an approximation.
-export function getAliasMetrics() {
-  const { latestWeek, priorWeek, devices } = getDeviceMetrics();
+export async function getAliasMetrics() {
+  const { latestWeek, priorWeek, devices } = await getDeviceMetrics();
 
   const aliases = new Map(); // alias -> { alias, isFlagship, category, brand, onHand, avg2wk, memberDeviceModels: [] }
   for (const d of devices.values()) {

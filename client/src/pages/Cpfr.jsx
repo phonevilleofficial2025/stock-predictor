@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import PageHeader from '../components/PageHeader.jsx';
+import SecondaryButton from '../components/SecondaryButton.jsx';
 import TableToolbar from '../components/TableToolbar.jsx';
 import Pagination from '../components/Pagination.jsx';
+import ImportModal from '../components/ImportModal.jsx';
 import { useFilteredTable } from '../hooks/useFilteredTable.js';
 import { downloadCsv } from '../utils/csv.js';
 import { formatWeekNumber } from '../utils/week.js';
@@ -86,6 +88,7 @@ export default function Cpfr() {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [importOpen, setImportOpen] = useState(false);
 
   const sheetRef = useRef(null);
 
@@ -222,7 +225,7 @@ export default function Cpfr() {
 
   return (
     <>
-      <PageHeader>CPFR</PageHeader>
+      <PageHeader actions={<SecondaryButton onClick={() => setImportOpen(true)}>Import</SecondaryButton>}>CPFR</PageHeader>
       <div className="py-6">
         <div className="max-w-[1700px] mx-auto px-4 sm:px-6 lg:px-8 space-y-4">
           <div className="bg-white dark:bg-gray-800 shadow-sm sm:rounded-lg p-4">
@@ -263,6 +266,12 @@ export default function Cpfr() {
           </div>
         </div>
       </div>
+      <ImportModal
+        open={importOpen}
+        fileTypes={['cpfr', 'sales']}
+        onClose={() => setImportOpen(false)}
+        onCommitted={loadCore}
+      />
     </>
   );
 }

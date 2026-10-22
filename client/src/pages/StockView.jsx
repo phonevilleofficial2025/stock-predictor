@@ -7,6 +7,7 @@ import StatusBadge from '../components/StatusBadge.jsx';
 import TableToolbar from '../components/TableToolbar.jsx';
 import Pagination from '../components/Pagination.jsx';
 import TableFrame, { ZoomArea } from '../components/TableFrame.jsx';
+import ImportModal from '../components/ImportModal.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
 import { useFilteredTable } from '../hooks/useFilteredTable.js';
 import { downloadCsv } from '../utils/csv.js';
@@ -114,6 +115,7 @@ export default function StockView() {
   const [stock, setStock] = useState([]);
   const [error, setError] = useState(null);
   const [aliasMode, setAliasMode] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const isSummary = storeId === ALL_STORES;
   const aliasRows = useMemo(() => groupByAlias(stock), [stock]);
@@ -144,6 +146,20 @@ export default function StockView() {
     const request = isSummary ? api.getStockSummary() : api.getStock(storeId);
     request.then(setStock).catch((e) => setError(e.message));
   }, [storeId]);
+
+  // Re-pulls stores (an import can create new ones) and the currently-viewed
+  // store's stock after a commit from the Import modal — keeps whatever store/
+  // summary selection the user already had instead of resetting it.
+  async function reloadAfterImport() {
+    try {
+      const s = await api.getStores();
+      setStores(s);
+      const request = isSummary ? api.getStockSummary() : api.getStock(storeId);
+      setStock(await request);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
 
   const totalOnHand = stock.reduce((sum, r) => sum + r.quantity, 0);
 
@@ -197,7 +213,7 @@ export default function StockView() {
 
   return (
     <>
-      <PageHeader>Stock View</PageHeader>
+      <PageHeader actions={<SecondaryButton onClick={() => setImportOpen(true)}>Import</SecondaryButton>}>Stock View</PageHeader>
       <div className="py-8">
         <div className="max-w-5xl mx-auto sm:px-6 lg:px-8 space-y-6">
           <Card>
@@ -340,6 +356,12 @@ export default function StockView() {
           </Card>
         </div>
       </div>
+      <ImportModal
+        open={importOpen}
+        fileType="inventory"
+        onClose={() => setImportOpen(false)}
+        onCommitted={reloadAfterImport}
+      />
     </>
   );
 }

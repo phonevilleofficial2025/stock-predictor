@@ -1,4 +1,19 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stockuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockpass}
+      POSTGRES_DB: ${POSTGRES_DB:-stockdb}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stockuser} -d ${POSTGRES_DB:-stockdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   server:
     build:
       context: ./server
@@ -7,10 +22,17 @@ services:
       PORT: 4000
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DATABASE_URL: postgres://${POSTGRES_USER:-stockuser}:${POSTGRES_PASSWORD:-stockpass}@postgres:5432/${POSTGRES_DB:-stockdb}
     volumes:
+      # Holds the old app.db from before the Postgres migration — kept as a free
+      # backup and as the source the one-off migrate-sqlite-to-postgres.js script
+      # reads from; no longer written to by the app itself.
       - server_data:/app/data
     ports:
       - "${SERVER_PORT:-4000}:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   client:
     build:
@@ -23,3 +45,4 @@ services:
 
 volumes:
   server_data:
+  postgres_data:

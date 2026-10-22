@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import './db.js';
+import { initSchema } from './db.js';
 import { ensureAdminAccount, requireAuth } from './lib/auth.js';
 
 import authRouter from './routes/auth.js';
@@ -14,8 +14,6 @@ import balanceRouter from './routes/balance.js';
 import poRouter from './routes/po.js';
 import rsiRouter from './routes/rsi.js';
 import deviceMasterRouter from './routes/deviceMaster.js';
-
-ensureAdminAccount();
 
 const app = express();
 app.use(cors());
@@ -44,4 +42,14 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
+
+async function main() {
+  await initSchema();
+  await ensureAdminAccount();
+  app.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
+}
+
+main().catch((err) => {
+  console.error('Startup failed:', err);
+  process.exit(1);
+});

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { db } from '../db.js';
+import { pool } from '../db.js';
+import { asyncHandler } from './asyncHandler.js';
 
 export const COOKIE_NAME = 'session_token';
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days
@@ -18,23 +19,26 @@ export function verifyPassword(password, stored) {
   return expected.length === candidate.length && crypto.timingSafeEqual(expected, candidate);
 }
 
-export function hasAnyUser() {
-  return db.prepare('SELECT COUNT(*) AS c FROM users').get().c > 0;
+export async function hasAnyUser() {
+  const { rows } = await pool.query('SELECT COUNT(*) AS c FROM users');
+  return Number(rows[0].c) > 0;
 }
 
-export function findUserByUsername(username) {
-  return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+export async function findUserByUsername(username) {
+  const { rows } = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+  return rows[0];
 }
 
-export function findUserById(id) {
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+export async function findUserById(id) {
+  const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+  return rows[0];
 }
 
 // Creates the single admin account from ADMIN_USERNAME/ADMIN_PASSWORD env vars, but only
 // when no user exists yet — a later change to ADMIN_PASSWORD does not silently reset an
 // existing account's password.
-export function ensureAdminAccount() {
-  if (hasAnyUser()) return;
+export async function ensureAdminAccount() {
+  if (await hasAnyUser()) return;
 
   const password = process.env.ADMIN_PASSWORD;
   if (!password) {
@@ -47,54 +51,59 @@ export function ensureAdminAccount() {
   }
 
   const username = process.env.ADMIN_USERNAME || 'admin';
-  db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)')
-    .run(username, hashPassword(password), new Date().toISOString());
+  await pool.query(
+    'INSERT INTO users (username, password_hash, created_at) VALUES ($1, $2, $3)',
+    [username, hashPassword(password), new Date().toISOString()]
+  );
   console.log(`[auth] Created admin account "${username}" from ADMIN_PASSWORD.`);
 }
 
-export function updateAccount(userId, { username, passwordHash }) {
-  db.prepare('UPDATE users SET username = ?, password_hash = ? WHERE id = ?').run(username, passwordHash, userId);
+export async function updateAccount(userId, { username, passwordHash }) {
+  await pool.query('UPDATE users SET username = $1, password_hash = $2 WHERE id = $3', [username, passwordHash, userId]);
 }
 
-export function createSession(userId) {
+export async function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
-  db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
-    .run(token, userId, new Date(now).toISOString(), new Date(now + SESSION_TTL_MS).toISOString());
+  await pool.query(
+    'INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)',
+    [token, userId, new Date(now).toISOString(), new Date(now + SESSION_TTL_MS).toISOString()]
+  );
   return token;
 }
 
 // Joins back to users on every call so a username changed mid-session (via account
 // settings) is reflected immediately, without needing to reissue the session token.
-export function getSession(token) {
+export async function getSession(token) {
   if (!token) return null;
-  const row = db.prepare(`
-    SELECT s.token, s.user_id AS userId, s.expires_at AS expiresAt, u.username AS username
+  const { rows } = await pool.query(`
+    SELECT s.token, s.user_id AS "userId", s.expires_at AS "expiresAt", u.username AS username
     FROM sessions s JOIN users u ON u.id = s.user_id
-    WHERE s.token = ?
-  `).get(token);
+    WHERE s.token = $1
+  `, [token]);
+  const row = rows[0];
   if (!row) return null;
   if (new Date(row.expiresAt).getTime() < Date.now()) {
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
     return null;
   }
   return row;
 }
 
-export function deleteSession(token) {
-  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+export async function deleteSession(token) {
+  await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
 }
 
 // Invalidates every other session for this user (e.g. after a password change), keeping
 // the current one (identified by its token) alive so the person making the change isn't
 // logged out by their own action.
-export function deleteOtherSessions(userId, keepToken) {
-  db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(userId, keepToken);
+export async function deleteOtherSessions(userId, keepToken) {
+  await pool.query('DELETE FROM sessions WHERE user_id = $1 AND token != $2', [userId, keepToken]);
 }
 
-export function requireAuth(req, res, next) {
-  const session = getSession(req.cookies?.[COOKIE_NAME]);
+export const requireAuth = asyncHandler(async (req, res, next) => {
+  const session = await getSession(req.cookies?.[COOKIE_NAME]);
   if (!session) return res.status(401).json({ error: 'Not logged in' });
   req.user = { id: session.userId, username: session.username };
   next();
-}
+});

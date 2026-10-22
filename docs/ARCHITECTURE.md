@@ -10,11 +10,13 @@ flowchart LR
   subgraph Docker["Docker Compose"]
     NGINX["client container<br/>nginx: static files + /api proxy"]
     API["server container<br/>Express 4 (Node 22+)"]
-    VOL[("server_data volume<br/>/app/data/app.db<br/>SQLite via node:sqlite")]
+    PG[("postgres container<br/>PostgreSQL 16<br/>postgres_data volume")]
+    VOL[("server_data volume<br/>legacy app.db backup,<br/>read by the one-off migration script only")]
   end
   SPA -- "HTTP :80" --> NGINX
   NGINX -- "/api/* to server:4000" --> API
-  API --> VOL
+  API -- "DATABASE_URL" --> PG
+  API -. "migrate-sqlite-to-postgres.js<br/>(one-off, not at runtime)" .-> VOL
 ```
 
 ## 2. Deployment diagram
@@ -23,8 +25,11 @@ flowchart LR
 flowchart TB
   user(("User")) --> host["Host machine<br/>port 80 (CLIENT_PORT)<br/>port 4000 (SERVER_PORT)"]
   host --> c1["client container<br/>nginx:alpine, client_max_body_size 25m"]
-  host --> c2["server container<br/>node, PORT=4000"]
-  c2 --- v[("named volume: server_data")]
+  host --> c2["server container<br/>node, PORT=4000<br/>depends_on postgres: service_healthy"]
+  host --> c3["postgres container<br/>postgres:16-alpine, internal port 5432 only"]
+  c2 -- "DATABASE_URL" --> c3
+  c3 --- v1[("named volume: postgres_data")]
+  c2 --- v2[("named volume: server_data (legacy backup)")]
 ```
 
 ## 3. Server module diagram (class-style)
@@ -39,8 +44,8 @@ classDiagram
     feature routers
   }
   class db {
-    DatabaseSync db
-    schema and migrations
+    pg.Pool pool
+    initSchema() (async)
   }
   class authLib {
     hashPassword()
@@ -159,7 +164,7 @@ sequenceDiagram
   actor U as User
   participant C as React client
   participant S as Express
-  participant D as SQLite
+  participant D as Postgres
   U->>C: username + password
   C->>S: POST /api/auth/login
   S->>D: SELECT user, scrypt verify
@@ -179,7 +184,7 @@ sequenceDiagram
   participant C as Upload page
   participant S as uploads route
   participant M as pendingUploads (memory)
-  participant D as SQLite
+  participant D as Postgres
   U->>C: choose CSV, type = inventory | sales | cpfr
   C->>S: POST /api/uploads/preview (multipart)
   S->>S: parseCsvBuffer, autoMapping or saved template
@@ -208,7 +213,7 @@ sequenceDiagram
   participant C as Cpfr page
   participant S as Express routes
   participant AM as aliasMetrics/deviceMetrics
-  participant D as SQLite
+  participant D as Postgres
   C->>S: GET /cpfr, /sales, /balance, /po/all, /device-master (parallel)
   S->>AM: getAliasMetrics() (sums per-device onHand/avg2wk to alias level)
   AM->>D: query products/store_stock/sales_weekly

@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { pool } from '../db.js';
 import { getAliasMetrics } from '../lib/aliasMetrics.js';
 import { computeSuggestion } from '../lib/predictions.js';
 import { fullYearWeeks } from '../lib/csv.js';
+import { asyncHandler } from '../lib/asyncHandler.js';
 
 const router = Router();
 
@@ -13,11 +14,13 @@ const router = Router();
 // existing CPFR entry — so the whole year's columns are there to plan against from
 // day one. Any out-of-range week that does have data (sell-out or CPFR) is still
 // included via the union.
-router.get('/cpfr', (req, res) => {
-  const { aliases } = getAliasMetrics();
+router.get('/cpfr', asyncHandler(async (req, res) => {
+  const { aliases } = await getAliasMetrics();
 
-  const salesWeeks = db.prepare('SELECT DISTINCT week_number AS w FROM sales_weekly').all().map((r) => r.w);
-  const cpfrWeeksData = db.prepare('SELECT DISTINCT week_number AS w FROM cpfr').all().map((r) => r.w);
+  const { rows: salesWeekRows } = await pool.query('SELECT DISTINCT week_number AS w FROM sales_weekly');
+  const salesWeeks = salesWeekRows.map((r) => r.w);
+  const { rows: cpfrWeekRows } = await pool.query('SELECT DISTINCT week_number AS w FROM cpfr');
+  const cpfrWeeksData = cpfrWeekRows.map((r) => r.w);
 
   const weekSet = new Set(fullYearWeeks(new Date().getFullYear()));
   for (const w of salesWeeks) weekSet.add(w);
@@ -29,10 +32,11 @@ router.get('/cpfr', (req, res) => {
   // upload instead of a year of empty placeholder columns.
   const latestDataWeek = [...salesWeeks, ...cpfrWeeksData].reduce((max, w) => (w > max ? w : max), null) ?? null;
 
+  const { rows: cpfrRows } = await pool.query('SELECT alias, week_number AS week, weekly_cpfr AS "weeklyCpfr", actual_do AS "actualDo" FROM cpfr');
   const cpfrByAlias = new Map();
-  for (const r of db.prepare('SELECT alias, week_number AS week, weekly_cpfr AS weeklyCpfr, actual_do AS actualDo FROM cpfr').all()) {
+  for (const r of cpfrRows) {
     if (!cpfrByAlias.has(r.alias)) cpfrByAlias.set(r.alias, {});
-    cpfrByAlias.get(r.alias)[r.week] = { weeklyCpfr: r.weeklyCpfr, actualDo: r.actualDo };
+    cpfrByAlias.get(r.alias)[r.week] = { weeklyCpfr: Number(r.weeklyCpfr), actualDo: Number(r.actualDo) };
   }
 
   const rows = Array.from(aliases.values()).map((a) => {
@@ -57,26 +61,26 @@ router.get('/cpfr', (req, res) => {
   }).sort((a, b) => a.alias.localeCompare(b.alias));
 
   res.json({ weeks, rows, latestDataWeek });
-});
+}));
 
-router.put('/cpfr', (req, res) => {
+router.put('/cpfr', asyncHandler(async (req, res) => {
   const { alias, week, weeklyCpfr, actualDo } = req.body;
   if (!alias || week === undefined || week === null) {
     return res.status(400).json({ error: 'alias and week are required' });
   }
 
-  const existing = db.prepare('SELECT weekly_cpfr AS weeklyCpfr, actual_do AS actualDo FROM cpfr WHERE alias = ? AND week_number = ?')
-    .get(alias, week);
+  const { rows } = await pool.query('SELECT weekly_cpfr AS "weeklyCpfr", actual_do AS "actualDo" FROM cpfr WHERE alias = $1 AND week_number = $2', [alias, week]);
+  const existing = rows[0];
   const nextWeeklyCpfr = weeklyCpfr !== undefined ? Number(weeklyCpfr) : (existing?.weeklyCpfr ?? 0);
   const nextActualDo = actualDo !== undefined ? Number(actualDo) : (existing?.actualDo ?? 0);
 
-  db.prepare(`
+  await pool.query(`
     INSERT INTO cpfr (alias, week_number, weekly_cpfr, actual_do)
-    VALUES (?, ?, ?, ?)
+    VALUES ($1, $2, $3, $4)
     ON CONFLICT(alias, week_number) DO UPDATE SET weekly_cpfr = excluded.weekly_cpfr, actual_do = excluded.actual_do
-  `).run(alias, week, nextWeeklyCpfr, nextActualDo);
+  `, [alias, week, nextWeeklyCpfr, nextActualDo]);
 
   res.json({ ok: true, alias, week, weeklyCpfr: nextWeeklyCpfr, actualDo: nextActualDo, totalCpfr: nextWeeklyCpfr - nextActualDo });
-});
+}));
 
 export default router;

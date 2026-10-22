@@ -1,4 +1,4 @@
-import { db } from '../db.js';
+import { pool } from '../db.js';
 import { computeUnservedSeries } from './balance.js';
 import { getAliasMetrics } from './aliasMetrics.js';
 
@@ -13,15 +13,16 @@ function fullYearMonths(year) {
   return MONTH_LABELS.map((label, i) => ({ month: `${year}-${String(i + 1).padStart(2, '0')}`, label }));
 }
 
-function allMonths() {
+async function allMonths() {
   const year = new Date().getFullYear();
   const map = new Map(fullYearMonths(year).map((m) => [m.month, m]));
-  for (const m of db.prepare('SELECT * FROM months ORDER BY month').all()) map.set(m.month, { month: m.month, label: m.label });
+  const { rows } = await pool.query('SELECT * FROM months ORDER BY month');
+  for (const m of rows) map.set(m.month, { month: m.month, label: m.label });
   return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
 }
 
-function weeksByMonth() {
-  const rows = db.prepare('SELECT DISTINCT week_number AS weekNumber, week_start AS weekStart FROM sales_weekly').all();
+async function weeksByMonth() {
+  const { rows } = await pool.query('SELECT DISTINCT week_number AS "weekNumber", week_start AS "weekStart" FROM sales_weekly');
   const map = new Map();
   for (const { weekNumber, weekStart } of rows) {
     if (!weekStart) continue;
@@ -37,31 +38,32 @@ function weeksByMonth() {
 // Balance (and, via po.js, Product Order) plan by alias — every color of a given
 // spec combined — the same unit the CPFR sheet itself plans in, not per individual
 // color/SKU.
-export function computeBalanceTable() {
-  const months = allMonths();
-  const weekMap = weeksByMonth();
-  const { aliases } = getAliasMetrics();
+export async function computeBalanceTable() {
+  const months = await allMonths();
+  const weekMap = await weeksByMonth();
+  const { aliases } = await getAliasMetrics();
 
-  const cpfrForWeeks = (alias, weekNumbers) => {
+  const cpfrForWeeks = async (alias, weekNumbers) => {
     if (!weekNumbers?.length) return 0;
-    const placeholders = weekNumbers.map(() => '?').join(',');
-    const row = db.prepare(`
+    const placeholders = weekNumbers.map((_, i) => `$${i + 2}`).join(',');
+    const { rows } = await pool.query(`
       SELECT COALESCE(SUM(weekly_cpfr - actual_do), 0) AS total
-      FROM cpfr WHERE alias = ? AND week_number IN (${placeholders})
-    `).get(alias, ...weekNumbers);
-    return row.total;
+      FROM cpfr WHERE alias = $1 AND week_number IN (${placeholders})
+    `, [alias, ...weekNumbers]);
+    return Number(rows[0].total);
   };
 
-  const table = Array.from(aliases.values())
-    .map(({ alias, onHand, isFlagship, category }) => {
-      const monthRows = months.map((m) => {
-        const totalCpfr = cpfrForWeeks(alias, weekMap.get(m.month) || []);
-        const existing = db.prepare('SELECT month_balance AS monthBalance FROM balance WHERE alias = ? AND month = ?').get(alias, m.month);
-        return { month: m.month, label: m.label, totalCpfr, monthBalance: existing?.monthBalance ?? 0 };
-      });
-      return { alias, onHand, isFlagship, category, months: computeUnservedSeries(monthRows) };
-    })
-    .sort((a, b) => a.alias.localeCompare(b.alias));
+  const table = [];
+  for (const { alias, onHand, isFlagship, category } of aliases.values()) {
+    const monthRows = [];
+    for (const m of months) {
+      const totalCpfr = await cpfrForWeeks(alias, weekMap.get(m.month) || []);
+      const { rows } = await pool.query('SELECT month_balance AS "monthBalance" FROM balance WHERE alias = $1 AND month = $2', [alias, m.month]);
+      monthRows.push({ month: m.month, label: m.label, totalCpfr, monthBalance: Number(rows[0]?.monthBalance ?? 0) });
+    }
+    table.push({ alias, onHand, isFlagship, category, months: computeUnservedSeries(monthRows) });
+  }
+  table.sort((a, b) => a.alias.localeCompare(b.alias));
 
   return { months, table };
 }

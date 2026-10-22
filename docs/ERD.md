@@ -1,6 +1,8 @@
 # Entity-Relationship Diagram
 
-Database: SQLite (`node:sqlite`), file `app.db`, created and migrated in [`server/src/db.js`](../server/src/db.js).
+Database: PostgreSQL, accessed via the `pg` driver (raw SQL, no ORM). Schema is created idempotently on every boot by `initSchema()` in [`server/src/db.js`](../server/src/db.js). Runs as its own `postgres` service in `docker-compose.yml`, connected to via `DATABASE_URL`.
+
+The app previously ran on `node:sqlite`; `server/scripts/migrate-sqlite-to-postgres.js` is the one-off script that carried existing data over during that cutover (safe to re-run — every insert is an upsert on the table's natural key).
 
 ```mermaid
 erDiagram
@@ -93,13 +95,13 @@ erDiagram
   }
   device_master {
     TEXT alias PK
-    REAL regular_srp
-    REAL promo_srp
-    REAL cost
+    DOUBLE regular_srp
+    DOUBLE promo_srp
+    DOUBLE cost
     TEXT promo_text
     INTEGER sw
-    REAL sa_score_ses
-    REAL sa_score_mb
+    DOUBLE sa_score_ses
+    DOUBLE sa_score_mb
     INTEGER stocks_snapshot
     INTEGER system_qty
     INTEGER unserved_qty

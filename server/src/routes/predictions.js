@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { pool } from '../db.js';
 import { getDeviceMetrics } from '../lib/deviceMetrics.js';
 import { aliasKey } from '../lib/alias.js';
 import { computeScore, classifyStatus, computeSuggestion, splitSuggestionByVariant } from '../lib/predictions.js';
+import { asyncHandler } from '../lib/asyncHandler.js';
 
 const router = Router();
 
@@ -11,12 +12,13 @@ const router = Router();
 // is split back down across its member devices, proportional to each device's share
 // of the alias's recent sell-out (falling back to an even split with no history),
 // the same way `splitSuggestionByVariant` already divides a suggested order.
-function loadCpfrByDevice(week, devices) {
+async function loadCpfrByDevice(week, devices) {
   const map = new Map();
   if (week === null) return map;
   const cpfrByAlias = new Map();
-  for (const r of db.prepare('SELECT alias, weekly_cpfr AS weeklyCpfr, actual_do AS actualDo FROM cpfr WHERE week_number = ?').all(week)) {
-    cpfrByAlias.set(r.alias, (cpfrByAlias.get(r.alias) || 0) + (r.weeklyCpfr - r.actualDo));
+  const { rows } = await pool.query('SELECT alias, weekly_cpfr AS "weeklyCpfr", actual_do AS "actualDo" FROM cpfr WHERE week_number = $1', [week]);
+  for (const r of rows) {
+    cpfrByAlias.set(r.alias, (cpfrByAlias.get(r.alias) || 0) + (Number(r.weeklyCpfr) - Number(r.actualDo)));
   }
   if (cpfrByAlias.size === 0) return map;
 
@@ -40,9 +42,9 @@ function loadCpfrByDevice(week, devices) {
   return map;
 }
 
-function loadVariantsByDevice() {
+async function loadVariantsByDevice() {
   const map = new Map();
-  const rows = db.prepare('SELECT id, sku, variant_name AS variantName, device_model AS deviceModel FROM products').all();
+  const { rows } = await pool.query('SELECT id, sku, variant_name AS "variantName", device_model AS "deviceModel" FROM products');
   for (const r of rows) {
     if (!map.has(r.deviceModel)) map.set(r.deviceModel, []);
     map.get(r.deviceModel).push({ id: r.id, sku: r.sku, variantName: r.variantName });
@@ -50,26 +52,26 @@ function loadVariantsByDevice() {
   return map;
 }
 
-function loadProductWeekQty(weeks) {
+async function loadProductWeekQty(weeks) {
   const map = new Map(); // productId -> { [week]: qty }
   if (weeks.length === 0) return map;
-  const placeholders = weeks.map(() => '?').join(',');
-  const rows = db.prepare(`SELECT product_id AS productId, week_number AS week, total_qty AS qty FROM sales_weekly WHERE week_number IN (${placeholders})`).all(...weeks);
+  const placeholders = weeks.map((_, i) => `$${i + 1}`).join(',');
+  const { rows } = await pool.query(`SELECT product_id AS "productId", week_number AS week, total_qty AS qty FROM sales_weekly WHERE week_number IN (${placeholders})`, weeks);
   for (const r of rows) {
     if (!map.has(r.productId)) map.set(r.productId, {});
-    map.get(r.productId)[r.week] = r.qty;
+    map.get(r.productId)[r.week] = Number(r.qty);
   }
   return map;
 }
 
-router.get('/predictions', (req, res) => {
-  const { latestWeek, priorWeek, devices } = getDeviceMetrics();
+router.get('/predictions', asyncHandler(async (req, res) => {
+  const { latestWeek, priorWeek, devices } = await getDeviceMetrics();
   if (devices.size === 0) return res.json({ latestWeek, priorWeek, predictions: [] });
 
-  const cpfrByDevice = loadCpfrByDevice(latestWeek, devices);
-  const variantsByDevice = loadVariantsByDevice();
+  const cpfrByDevice = await loadCpfrByDevice(latestWeek, devices);
+  const variantsByDevice = await loadVariantsByDevice();
   const weeks = [latestWeek, priorWeek].filter((w) => w !== null);
-  const productWeekQty = loadProductWeekQty(weeks);
+  const productWeekQty = await loadProductWeekQty(weeks);
 
   function variantSplitFor(deviceModel, suggestion) {
     const variants = variantsByDevice.get(deviceModel) || [];
@@ -110,6 +112,6 @@ router.get('/predictions', (req, res) => {
   });
 
   res.json({ latestWeek, priorWeek, predictions });
-});
+}));
 
 export default router;

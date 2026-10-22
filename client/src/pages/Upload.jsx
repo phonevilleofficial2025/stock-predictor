@@ -4,104 +4,11 @@ import Card from '../components/Card.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import PrimaryButton from '../components/PrimaryButton.jsx';
 import SecondaryButton from '../components/SecondaryButton.jsx';
-import TableFrame, { ZoomArea } from '../components/TableFrame.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
+import MappingForm from '../components/upload/MappingForm.jsx';
+import PreviewTable from '../components/upload/PreviewTable.jsx';
 import { formatWeekNumber } from '../utils/week.js';
-
-function sundayOnOrBefore(date) {
-  const d = new Date(date);
-  d.setUTCDate(d.getUTCDate() - d.getUTCDay());
-  return d;
-}
-
-// Retail week-of-year (Sunday-Saturday, Week 1 starts on the Sunday on/before Jan 1st)
-// — mirrors the server's calculation so the mapped Sale Date column can be previewed
-// client-side before committing; the server recomputes it authoritatively over the
-// full file.
-function retailWeekInfo(date) {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-  let year = d.getUTCFullYear();
-  let week1Start = sundayOnOrBefore(new Date(Date.UTC(year, 0, 1)));
-
-  if (d < week1Start) {
-    year -= 1;
-    week1Start = sundayOnOrBefore(new Date(Date.UTC(year, 0, 1)));
-  } else {
-    const nextWeek1Start = sundayOnOrBefore(new Date(Date.UTC(year + 1, 0, 1)));
-    if (d >= nextWeek1Start) {
-      year += 1;
-      week1Start = nextWeek1Start;
-    }
-  }
-
-  const retailWeek = Math.floor((d - week1Start) / (7 * 24 * 3600 * 1000)) + 1;
-  return { retailYear: year, retailWeek };
-}
-
-function MappingForm({ preview, mapping, setMapping }) {
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 my-4">
-      {preview.fields.map((f) => (
-        <div key={f.key}>
-          <label className="block font-medium text-sm text-gray-700 dark:text-gray-300 mb-1">
-            {f.label}{f.required ? ' *' : ''}
-          </label>
-          <select
-            value={mapping[f.key] || ''}
-            onChange={(e) => setMapping((m) => ({ ...m, [f.key]: e.target.value || undefined }))}
-            className="w-full border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 rounded-md shadow-sm focus:border-indigo-500 dark:focus:border-indigo-600 focus:ring-indigo-500 dark:focus:ring-indigo-600 text-sm"
-          >
-            <option value="">— not mapped —</option>
-            {preview.headers.map((h) => (
-              <option key={h} value={h}>{h}</option>
-            ))}
-          </select>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function PreviewTable({ preview }) {
-  const [search, setSearch] = useState('');
-
-  const filteredRows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return preview.previewRows;
-    return preview.previewRows.filter((row) => row.some((cell) => String(cell ?? '').toLowerCase().includes(q)));
-  }, [preview.previewRows, search]);
-
-  return (
-    <TableFrame>
-      <input
-        type="text"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search preview…"
-        className="w-full sm:w-64 mb-2 border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 rounded-md shadow-sm focus:border-indigo-500 dark:focus:border-indigo-600 focus:ring-indigo-500 dark:focus:ring-indigo-600 text-sm"
-      />
-      <ZoomArea>
-        <div className="overflow-auto max-h-96 border border-gray-200 dark:border-gray-700 rounded-md">
-          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
-            <thead className="sticky top-0 bg-white dark:bg-gray-800">
-              <tr className="text-left text-gray-500 dark:text-gray-400">
-                {preview.headers.map((h) => <th key={h} className="px-3 py-2 whitespace-nowrap">{h}</th>)}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-              {filteredRows.map((row, i) => (
-                <tr key={i}>{row.map((cell, j) => <td key={j} className="px-3 py-2 whitespace-nowrap">{cell}</td>)}</tr>
-              ))}
-              {filteredRows.length === 0 && (
-                <tr><td colSpan={preview.headers.length} className="px-3 py-6 text-center text-gray-500 dark:text-gray-400">No rows match your search.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </ZoomArea>
-    </TableFrame>
-  );
-}
+import { retailWeekInfo } from '../utils/retailWeek.js';
 
 function UploadCard({ fileType, title, description, onCommitted }) {
   const confirm = useConfirm();

@@ -1,8 +1,8 @@
 # Dependencies
 
 ## Runtime requirements
-- **Docker + Docker Compose** (recommended), or
-- **Node.js 22.5+** – the server uses the built-in experimental `node:sqlite` module.
+- **Docker + Docker Compose** (recommended) — brings up Postgres, the API, and the client together, or
+- **Node.js 22+** plus your own PostgreSQL instance (set `DATABASE_URL`) for running the server outside Docker.
 
 ## Server ([`server/package.json`](../server/package.json))
 
@@ -13,7 +13,10 @@
 | cookie-parser | ^1.4.7 | Session cookie parsing |
 | multer | ^2.0.1 | Multipart CSV upload (memory storage, 20 MB limit) |
 | csv-parse | ^5.6.0 | CSV parsing |
-| node:sqlite, node:crypto | built-in | Database; scrypt password hashing; UUIDs |
+| pg | ^8.13.1 | PostgreSQL driver (raw SQL, no ORM) |
+| node:crypto | built-in | scrypt password hashing; UUIDs |
+
+`server/scripts/migrate-sqlite-to-postgres.js` additionally uses `node:sqlite` (built-in) — only to read the legacy `app.db` file during the one-off SQLite→Postgres data migration; the app itself no longer touches it.
 
 Tests use Node's built-in runner (`npm test`).
 
@@ -42,7 +45,8 @@ flowchart LR
   express --> cookieParser["cookie-parser"]
   express --> multer
   server --> csvparse["csv-parse"]
-  server --> sqlite["node:sqlite"]
+  server --> pg
+  pg --> postgres[("PostgreSQL")]
   client --> react
   react --> reactdom["react-dom"]
   client --> router["react-router-dom"]
@@ -60,12 +64,17 @@ flowchart LR
 |---|---|---|
 | `ADMIN_USERNAME` | `admin` | Username of the admin account created on first start |
 | `ADMIN_PASSWORD` | none | Password for the admin account. **Required on first start**; only used if no users exist yet |
+| `POSTGRES_USER` | `stockuser` | Postgres role the server connects as |
+| `POSTGRES_PASSWORD` | `stockpass` | Postgres role password — **set a real value in `.env`**, the compose default is a placeholder |
+| `POSTGRES_DB` | `stockdb` | Database name |
+| `DATABASE_URL` | built from the three vars above | Full connection string the server/migration script use; built automatically in `docker-compose.yml`, only needs setting by hand when running the server outside Docker |
 | `CLIENT_PORT` | `80` | Host port for the web UI |
 | `SERVER_PORT` | `4000` | Host port for the API |
 | `PORT` | `4000` | Server listen port inside the container |
 
-Copy [`.env.example`](../.env.example) to `.env` and set `ADMIN_PASSWORD`. `.env` is git-ignored – never commit it.
+Copy [`.env.example`](../.env.example) to `.env` and set `ADMIN_PASSWORD` and `POSTGRES_PASSWORD`. `.env` is git-ignored – never commit it.
 
 ## Docker images
 - `client`: Vite build served by **nginx** (`client/nginx.conf`: 25 MB upload limit, `/api/` proxy, cache headers).
-- `server`: Node image running `src/index.js`; the SQLite file lives in the `server_data` volume at `/app/data`.
+- `server`: Node image running `src/index.js`, connecting to the `postgres` service over `DATABASE_URL`. Still mounts the old `server_data` volume at `/app/data` — it holds the legacy `app.db` file as a backup and as the source for `scripts/migrate-sqlite-to-postgres.js`, but the app no longer writes to it.
+- `postgres`: official `postgres:16-alpine` image; data persists in the `postgres_data` named volume.

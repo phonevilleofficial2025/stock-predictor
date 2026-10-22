@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import multer from 'multer';
 import crypto from 'node:crypto';
-import { db } from '../db.js';
+import { pool } from '../db.js';
 import { parseCsvBuffer, rowsToObjects, detectCadence, retailWeekInfo } from '../lib/csv.js';
 import { aliasKey } from '../lib/alias.js';
+import { asyncHandler } from '../lib/asyncHandler.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const router = Router();
@@ -42,40 +43,6 @@ const CPFR_FIELDS = [
   { key: 'quantity', label: 'Quantity', required: true },
 ];
 
-// Prepared once and reused across every row of every upload — re-preparing inside a
-// per-row loop for large files (tens of thousands of rows) is what was crashing the
-// experimental node:sqlite binding.
-const stmt = {
-  saveTemplate: db.prepare(`
-    INSERT INTO import_templates (file_type, column_mapping, headers_signature)
-    VALUES (?, ?, ?)
-    ON CONFLICT(file_type) DO UPDATE SET column_mapping = excluded.column_mapping, headers_signature = excluded.headers_signature
-  `),
-  getStoreByName: db.prepare('SELECT id FROM stores WHERE name = ?'),
-  insertStore: db.prepare('INSERT INTO stores (name) VALUES (?)'),
-  getProductBySku: db.prepare('SELECT id, category, brand FROM products WHERE sku = ?'),
-  updateProduct: db.prepare('UPDATE products SET device_model = ?, variant_name = ?, category = ?, brand = ? WHERE id = ?'),
-  insertProduct: db.prepare('INSERT INTO products (sku, device_model, variant_name, category, brand) VALUES (?, ?, ?, ?, ?)'),
-  upsertStock: db.prepare(`
-    INSERT INTO store_stock (store_id, product_id, quantity, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(store_id, product_id) DO UPDATE SET quantity = excluded.quantity, updated_at = excluded.updated_at
-  `),
-  getStockForStore: db.prepare('SELECT product_id AS productId, quantity FROM store_stock WHERE store_id = ?'),
-  zeroStock: db.prepare('UPDATE store_stock SET quantity = 0, updated_at = ? WHERE store_id = ? AND product_id = ?'),
-  insertUpload: db.prepare('INSERT INTO uploads (filename, file_type, uploaded_at, row_count, week_number) VALUES (?, ?, ?, ?, ?)'),
-  upsertSalesWeekly: db.prepare(`
-    INSERT INTO sales_weekly (product_id, week_number, week_start, week_end, total_qty)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(product_id, week_number) DO UPDATE SET total_qty = excluded.total_qty, week_start = excluded.week_start, week_end = excluded.week_end
-  `),
-  upsertStoreSalesMonthly: db.prepare(`
-    INSERT INTO store_sales_monthly (store_id, month, total_qty)
-    VALUES (?, ?, ?)
-    ON CONFLICT(store_id, month) DO UPDATE SET total_qty = total_qty + excluded.total_qty
-  `),
-};
-
 function headersSignature(headers) {
   return crypto.createHash('sha1').update(headers.join('|')).digest('hex');
 }
@@ -112,7 +79,7 @@ router.get('/fields/:fileType', (req, res) => {
   return res.status(400).json({ error: 'Unknown file type' });
 });
 
-router.post('/preview', upload.single('file'), (req, res) => {
+router.post('/preview', upload.single('file'), asyncHandler(async (req, res) => {
   const { fileType } = req.body;
   if (!['inventory', 'sales', 'cpfr'].includes(fileType)) {
     return res.status(400).json({ error: 'fileType must be "inventory", "sales", or "cpfr"' });
@@ -138,7 +105,11 @@ router.post('/preview', upload.single('file'), (req, res) => {
 
   const fields = fileType === 'inventory' ? INVENTORY_FIELDS : fileType === 'sales' ? SALES_FIELDS : CPFR_FIELDS;
   const sig = headersSignature(headers);
-  const saved = db.prepare('SELECT column_mapping FROM import_templates WHERE file_type = ? AND headers_signature = ?').get(fileType, sig);
+  const { rows: templateRows } = await pool.query(
+    'SELECT column_mapping FROM import_templates WHERE file_type = $1 AND headers_signature = $2',
+    [fileType, sig]
+  );
+  const saved = templateRows[0];
 
   res.json({
     uploadId,
@@ -150,7 +121,7 @@ router.post('/preview', upload.single('file'), (req, res) => {
     suggestedMapping: saved ? JSON.parse(saved.column_mapping) : autoMapping(fields, headers),
     autoApplied: Boolean(saved),
   });
-});
+}));
 
 function requireMapping(fields, mapping) {
   const missing = fields.filter((f) => f.required && !mapping[f.key]);
@@ -159,34 +130,45 @@ function requireMapping(fields, mapping) {
   }
 }
 
-function saveTemplate(fileType, headers, mapping) {
+async function saveTemplate(fileType, headers, mapping) {
   const sig = headersSignature(headers);
-  stmt.saveTemplate.run(fileType, JSON.stringify(mapping), sig);
+  await pool.query(`
+    INSERT INTO import_templates (file_type, column_mapping, headers_signature)
+    VALUES ($1, $2, $3)
+    ON CONFLICT(file_type) DO UPDATE SET column_mapping = excluded.column_mapping, headers_signature = excluded.headers_signature
+  `, [fileType, JSON.stringify(mapping), sig]);
 }
 
-function getOrCreateStore(name) {
-  const existing = stmt.getStoreByName.get(name);
-  if (existing) return existing.id;
-  const result = stmt.insertStore.run(name);
-  return Number(result.lastInsertRowid);
+async function getOrCreateStore(client, name) {
+  const { rows } = await client.query('SELECT id FROM stores WHERE name = $1', [name]);
+  if (rows[0]) return rows[0].id;
+  const { rows: inserted } = await client.query('INSERT INTO stores (name) VALUES ($1) RETURNING id', [name]);
+  return inserted[0].id;
 }
 
 // category/brand are optional and, unlike deviceModel/variantName, only ever supplied
 // by inventory uploads — passing them as `undefined` (as sales uploads do) preserves
 // whatever value a prior inventory upload already set, instead of wiping it out.
-function getOrCreateProduct({ sku, deviceModel, variantName, category, brand }) {
-  const existing = stmt.getProductBySku.get(sku);
+async function getOrCreateProduct(client, { sku, deviceModel, variantName, category, brand }) {
+  const { rows } = await client.query('SELECT id, category, brand FROM products WHERE sku = $1', [sku]);
+  const existing = rows[0];
   if (existing) {
     const nextCategory = category !== undefined ? (category || null) : existing.category;
     const nextBrand = brand !== undefined ? (brand || null) : existing.brand;
-    stmt.updateProduct.run(deviceModel, variantName || null, nextCategory, nextBrand, existing.id);
+    await client.query(
+      'UPDATE products SET device_model = $1, variant_name = $2, category = $3, brand = $4 WHERE id = $5',
+      [deviceModel, variantName || null, nextCategory, nextBrand, existing.id]
+    );
     return existing.id;
   }
-  const result = stmt.insertProduct.run(sku, deviceModel, variantName || null, category || null, brand || null);
-  return Number(result.lastInsertRowid);
+  const { rows: inserted } = await client.query(
+    'INSERT INTO products (sku, device_model, variant_name, category, brand) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+    [sku, deviceModel, variantName || null, category || null, brand || null]
+  );
+  return inserted[0].id;
 }
 
-router.post('/inventory/commit', (req, res) => {
+router.post('/inventory/commit', asyncHandler(async (req, res) => {
   const { uploadId, mapping, saveAsTemplate = true } = req.body;
   const pending = pendingUploads.get(uploadId);
   if (!pending || pending.fileType !== 'inventory') {
@@ -205,8 +187,10 @@ router.post('/inventory/commit', (req, res) => {
   let zeroedCount = 0;
   const seenByStore = new Map(); // storeId -> Set<productId> mentioned in this upload
 
-  db.exec('BEGIN');
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+
     for (const obj of objects) {
       const sku = obj[mapping.sku];
       const storeName = obj[mapping.store];
@@ -218,10 +202,14 @@ router.post('/inventory/commit', (req, res) => {
       const category = mapping.category ? obj[mapping.category] : undefined;
       const brand = mapping.brand ? obj[mapping.brand] : undefined;
 
-      const storeId = getOrCreateStore(storeName);
-      const productId = getOrCreateProduct({ sku, deviceModel, variantName, category, brand });
+      const storeId = await getOrCreateStore(client, storeName);
+      const productId = await getOrCreateProduct(client, { sku, deviceModel, variantName, category, brand });
 
-      stmt.upsertStock.run(storeId, productId, quantity, now);
+      await client.query(`
+        INSERT INTO store_stock (store_id, product_id, quantity, updated_at)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (store_id, product_id) DO UPDATE SET quantity = excluded.quantity, updated_at = excluded.updated_at
+      `, [storeId, productId, quantity, now]);
       rowCount += 1;
 
       if (!seenByStore.has(storeId)) seenByStore.set(storeId, new Set());
@@ -233,27 +221,30 @@ router.post('/inventory/commit', (req, res) => {
     // no longer stocked there (zeroed out), rather than silently keeping its last
     // nonzero on-hand forever. Only touches stores this upload actually covers.
     for (const [storeId, seenProductIds] of seenByStore) {
-      for (const row of stmt.getStockForStore.all(storeId)) {
+      const { rows: stockRows } = await client.query('SELECT product_id AS "productId", quantity FROM store_stock WHERE store_id = $1', [storeId]);
+      for (const row of stockRows) {
         if (!seenProductIds.has(row.productId) && row.quantity !== 0) {
-          stmt.zeroStock.run(now, storeId, row.productId);
+          await client.query('UPDATE store_stock SET quantity = 0, updated_at = $1 WHERE store_id = $2 AND product_id = $3', [now, storeId, row.productId]);
           zeroedCount += 1;
         }
       }
     }
 
-    stmt.insertUpload.run(pending.filename, 'inventory', now, rowCount, null);
-    db.exec('COMMIT');
+    await client.query('INSERT INTO uploads (filename, file_type, uploaded_at, row_count, week_number) VALUES ($1, $2, $3, $4, $5)', [pending.filename, 'inventory', now, rowCount, null]);
+    await client.query('COMMIT');
   } catch (err) {
-    db.exec('ROLLBACK');
+    await client.query('ROLLBACK');
     return res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 
-  if (saveAsTemplate) saveTemplate('inventory', pending.headers, mapping);
+  if (saveAsTemplate) await saveTemplate('inventory', pending.headers, mapping);
   pendingUploads.delete(uploadId);
   res.json({ ok: true, rowsUpdated: rowCount, rowsZeroed: zeroedCount });
-});
+}));
 
-router.post('/sales/commit', (req, res) => {
+router.post('/sales/commit', asyncHandler(async (req, res) => {
   const { uploadId, mapping, saveAsTemplate = true } = req.body;
   const pending = pendingUploads.get(uploadId);
   if (!pending || pending.fileType !== 'sales') {
@@ -299,16 +290,18 @@ router.post('/sales/commit', (req, res) => {
   const productTotals = new Map(); // productId -> qty
   const storeMonthTotals = new Map(); // "storeId|month" -> qty
 
-  db.exec('BEGIN');
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+
     for (const obj of objects) {
       const sku = obj[mapping.sku];
       const storeName = obj[mapping.store];
       if (!sku || !storeName) continue;
 
       const deviceModel = obj[mapping.deviceModel] || sku;
-      const storeId = getOrCreateStore(storeName);
-      const productId = getOrCreateProduct({ sku, deviceModel, variantName: null });
+      const storeId = await getOrCreateStore(client, storeName);
+      const productId = await getOrCreateProduct(client, { sku, deviceModel, variantName: null });
 
       productTotals.set(productId, (productTotals.get(productId) || 0) + 1);
 
@@ -323,22 +316,32 @@ router.post('/sales/commit', (req, res) => {
     }
 
     for (const [productId, qty] of productTotals.entries()) {
-      stmt.upsertSalesWeekly.run(productId, weekNumber, cadence.min.toISOString(), cadence.max.toISOString(), qty);
+      await client.query(`
+        INSERT INTO sales_weekly (product_id, week_number, week_start, week_end, total_qty)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (product_id, week_number) DO UPDATE SET total_qty = excluded.total_qty, week_start = excluded.week_start, week_end = excluded.week_end
+      `, [productId, weekNumber, cadence.min.toISOString(), cadence.max.toISOString(), qty]);
     }
 
     for (const [key, qty] of storeMonthTotals.entries()) {
       const [storeId, month] = key.split('|');
-      stmt.upsertStoreSalesMonthly.run(Number(storeId), month, qty);
+      await client.query(`
+        INSERT INTO store_sales_monthly (store_id, month, total_qty)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (store_id, month) DO UPDATE SET total_qty = store_sales_monthly.total_qty + excluded.total_qty
+      `, [Number(storeId), month, qty]);
     }
 
-    stmt.insertUpload.run(pending.filename, 'sales', now, objects.length, weekNumber);
-    db.exec('COMMIT');
+    await client.query('INSERT INTO uploads (filename, file_type, uploaded_at, row_count, week_number) VALUES ($1, $2, $3, $4, $5)', [pending.filename, 'sales', now, objects.length, weekNumber]);
+    await client.query('COMMIT');
   } catch (err) {
-    db.exec('ROLLBACK');
+    await client.query('ROLLBACK');
     return res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 
-  if (saveAsTemplate) saveTemplate('sales', pending.headers, mapping);
+  if (saveAsTemplate) await saveTemplate('sales', pending.headers, mapping);
   pendingUploads.delete(uploadId);
   res.json({
     ok: true,
@@ -350,7 +353,7 @@ router.post('/sales/commit', (req, res) => {
     weekEnd: cadence.max.toISOString(),
     productsUpdated: productTotals.size,
   });
-});
+}));
 
 // CPFR cycle files have no date/week column (just one quantity per alias for the
 // whole cycle), so the week is picked by hand at commit time — then resolved through
@@ -360,7 +363,7 @@ router.post('/sales/commit', (req, res) => {
 // Weekly CPFR that alias/week already had (an earlier upload, or a manual edit) —
 // not a blind overwrite, since separate uploads/edits can legitimately stack within
 // one planning cycle.
-router.post('/cpfr/commit', (req, res) => {
+router.post('/cpfr/commit', asyncHandler(async (req, res) => {
   const { uploadId, mapping, date, saveAsTemplate = true } = req.body;
   const pending = pendingUploads.get(uploadId);
   if (!pending || pending.fileType !== 'cpfr') {
@@ -394,33 +397,37 @@ router.post('/cpfr/commit', (req, res) => {
   }
 
   const now = new Date().toISOString();
-  db.exec('BEGIN');
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+
     for (const [alias, qty] of totalsByAlias) {
-      const existing = db.prepare('SELECT weekly_cpfr AS weeklyCpfr FROM cpfr WHERE alias = ? AND week_number = ?').get(alias, weekNumber);
-      const nextWeeklyCpfr = (existing?.weeklyCpfr ?? 0) + qty;
-      db.prepare(`
+      const { rows } = await client.query('SELECT weekly_cpfr AS "weeklyCpfr" FROM cpfr WHERE alias = $1 AND week_number = $2', [alias, weekNumber]);
+      const nextWeeklyCpfr = (rows[0]?.weeklyCpfr ?? 0) + qty;
+      await client.query(`
         INSERT INTO cpfr (alias, week_number, weekly_cpfr, actual_do)
-        VALUES (?, ?, ?, 0)
-        ON CONFLICT(alias, week_number) DO UPDATE SET weekly_cpfr = excluded.weekly_cpfr
-      `).run(alias, weekNumber, nextWeeklyCpfr);
+        VALUES ($1, $2, $3, 0)
+        ON CONFLICT (alias, week_number) DO UPDATE SET weekly_cpfr = excluded.weekly_cpfr
+      `, [alias, weekNumber, nextWeeklyCpfr]);
     }
 
-    stmt.insertUpload.run(pending.filename, 'cpfr', now, totalsByAlias.size, weekNumber);
-    db.exec('COMMIT');
+    await client.query('INSERT INTO uploads (filename, file_type, uploaded_at, row_count, week_number) VALUES ($1, $2, $3, $4, $5)', [pending.filename, 'cpfr', now, totalsByAlias.size, weekNumber]);
+    await client.query('COMMIT');
   } catch (err) {
-    db.exec('ROLLBACK');
+    await client.query('ROLLBACK');
     return res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 
-  if (saveAsTemplate) saveTemplate('cpfr', pending.headers, mapping);
+  if (saveAsTemplate) await saveTemplate('cpfr', pending.headers, mapping);
   pendingUploads.delete(uploadId);
   res.json({ ok: true, weekNumber, weekLabel, aliasesUpdated: totalsByAlias.size, skippedCount });
-});
+}));
 
-router.get('/history', (req, res) => {
-  const rows = db.prepare('SELECT * FROM uploads ORDER BY id DESC LIMIT 50').all();
+router.get('/history', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM uploads ORDER BY id DESC LIMIT 50');
   res.json(rows);
-});
+}));
 
 export default router;
