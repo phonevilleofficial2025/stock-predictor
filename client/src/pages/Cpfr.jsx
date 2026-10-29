@@ -89,14 +89,22 @@ export default function Cpfr() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [importOpen, setImportOpen] = useState(false);
+  const [cpfrOnly, setCpfrOnly] = useState(false);
 
   const sheetRef = useRef(null);
+
+  // An alias "has a CPFR value" if any week's Weekly CPFR entry is non-zero —
+  // filters out rows nobody's planned a CPFR quantity for yet.
+  const cpfrFilterableRows = useMemo(() => {
+    if (!cpfrOnly) return rows;
+    return rows.filter((r) => Object.values(r.cpfrByWeek).some((w) => w.weeklyCpfr !== 0));
+  }, [rows, cpfrOnly]);
 
   const {
     search, setSearch, flagshipOnly, setFlagshipOnly, minQty, setMinQty, maxQty, setMaxQty,
     categoryFilter, setCategoryFilter, categoryOptions,
     page, setPage, pageSize, setPageSize, pageRows, filteredRows, total, pageCount, start,
-  } = useFilteredTable(rows, {
+  } = useFilteredTable(cpfrFilterableRows, {
     getSearchText: (r) => `${r.alias} ${r.category || ''}`,
     getIsFlagship: (r) => r.isFlagship,
     getOnHand: (r) => r.onHand,
@@ -251,6 +259,17 @@ export default function Cpfr() {
               <p className="text-sm text-gray-500 dark:text-gray-400">No devices yet — upload inventory and sales files first.</p>
             ) : (
               <>
+                <div className="flex flex-wrap items-end gap-4 mb-2">
+                  <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      checked={cpfrOnly}
+                      onChange={(e) => setCpfrOnly(e.target.checked)}
+                      className="rounded border-gray-300 dark:border-gray-700 text-indigo-600 shadow-sm focus:ring-indigo-500 dark:focus:ring-indigo-600 dark:bg-gray-900"
+                    />
+                    Has CPFR value only
+                  </label>
+                </div>
                 <TableToolbar
                   search={search} onSearchChange={setSearch} searchPlaceholder="Search alias…"
                   showFlagshipFilter flagshipOnly={flagshipOnly} onFlagshipChange={setFlagshipOnly}
