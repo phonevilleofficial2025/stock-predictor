@@ -4,11 +4,12 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/index.js",
-    "start": "node src/index.js",
+    "dev": "node --watch --import ./src/instrument.js src/index.js",
+    "start": "node --import ./src/instrument.js src/index.js",
     "test": "node --test src/**/*.test.js"
   },
   "dependencies": {
+    "@sentry/node": "^11.10.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "csv-parse": "^5.6.0",

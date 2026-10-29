@@ -12,6 +12,9 @@ async function request(path, options = {}) {
     if (res.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
       window.dispatchEvent(new CustomEvent('auth:unauthorized'));
     }
+    if (data?.needsTurnstile) {
+      window.dispatchEvent(new CustomEvent('turnstile:required'));
+    }
     const err = new Error(data?.error || `Request failed: ${res.status}`);
     err.status = res.status;
     err.needsSetup = data?.needsSetup ?? false;
@@ -21,6 +24,10 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  // Turnstile — the pre-everything human-verification gate, checked before auth
+  getTurnstileStatus: () => request('/turnstile/status'),
+  verifyTurnstile: (token) => request('/turnstile/verify', { method: 'POST', body: JSON.stringify({ token }) }),
+
   // Auth
   login: (username, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request('/auth/logout', { method: 'POST' }),

@@ -10,6 +10,7 @@ import Guide from './pages/Guide.jsx';
 import Login from './pages/Login.jsx';
 import Settings from './pages/Settings.jsx';
 import ProfileMenu from './components/ProfileMenu.jsx';
+import TurnstileGate from './components/TurnstileGate.jsx';
 import { ConfirmProvider } from './components/ConfirmDialog.jsx';
 
 const tabs = [
@@ -40,14 +41,30 @@ function mobileNavLinkClass({ isActive }) {
 
 export default function App() {
   const [open, setOpen] = useState(false);
+  const [turnstileState, setTurnstileState] = useState('checking'); // 'checking' | 'required' | 'passed'
   const [authState, setAuthState] = useState('checking'); // 'checking' | 'out' | 'in'
   const [username, setUsername] = useState('');
 
   useEffect(() => {
+    api.getTurnstileStatus()
+      .then((res) => setTurnstileState(res.verified ? 'passed' : 'required'))
+      .catch(() => setTurnstileState('required')); // fail closed — can't confirm the gate, so don't skip it
+  }, []);
+
+  useEffect(() => {
+    function onTurnstileRequired() {
+      setTurnstileState('required');
+    }
+    window.addEventListener('turnstile:required', onTurnstileRequired);
+    return () => window.removeEventListener('turnstile:required', onTurnstileRequired);
+  }, []);
+
+  useEffect(() => {
+    if (turnstileState !== 'passed') return;
     api.getMe()
       .then((res) => { setUsername(res.username); setAuthState('in'); })
       .catch(() => setAuthState('out'));
-  }, []);
+  }, [turnstileState]);
 
   useEffect(() => {
     function onUnauthorized() {
@@ -70,6 +87,14 @@ export default function App() {
       setUsername('');
       setAuthState('out');
     }
+  }
+
+  if (turnstileState === 'checking') {
+    return <div className="min-h-screen bg-gray-100 dark:bg-gray-900" />;
+  }
+
+  if (turnstileState === 'required') {
+    return <TurnstileGate onVerified={() => setTurnstileState('passed')} />;
   }
 
   if (authState === 'checking') {

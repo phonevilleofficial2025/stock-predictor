@@ -13,4 +13,4 @@ EXPOSE 4000
 
 VOLUME ["/app/data"]
 
-CMD ["node", "src/index.js"]
+CMD ["node", "--import", "./src/instrument.js", "src/index.js"]

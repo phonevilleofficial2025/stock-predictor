@@ -1,9 +1,12 @@
+import * as Sentry from '@sentry/node';
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { initSchema } from './db.js';
 import { ensureAdminAccount, requireAuth } from './lib/auth.js';
+import { requireTurnstile } from './lib/turnstile.js';
 
+import turnstileRouter from './routes/turnstile.js';
 import authRouter from './routes/auth.js';
 import uploadsRouter from './routes/uploads.js';
 import stockRouter from './routes/stock.js';
@@ -21,6 +24,12 @@ app.use(cookieParser());
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.use('/api/turnstile', turnstileRouter);
+
+// Everything below requires passing the human-verification gate first (if
+// TURNSTILE_SECRET_KEY is configured — a no-op otherwise), ahead of even login.
+app.use('/api', requireTurnstile);
+
 app.use('/api/auth', authRouter);
 
 // Everything below requires a logged-in session.
@@ -36,6 +45,9 @@ app.use('/api', poRouter);
 app.use('/api', rsiRouter);
 app.use('/api', deviceMasterRouter);
 
+// Sentry's expressIntegration() (initialized in instrument.js, preloaded before
+// this file) already auto-captures anything that reaches next(err) here — every
+// asyncHandler-wrapped route — no separate Sentry error-handler needed.
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ error: err.message || 'Internal server error' });
@@ -49,7 +61,9 @@ async function main() {
   app.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error('Startup failed:', err);
+  Sentry.captureException(err);
+  await Sentry.flush(2000); // give the event a moment to actually send before the process exits
   process.exit(1);
 });
