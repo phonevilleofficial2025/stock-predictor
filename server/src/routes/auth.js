@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import {
   COOKIE_NAME, findUserByUsername, findUserById, verifyPassword, hashPassword,
   createSession, getSession, deleteSession, deleteOtherSessions, hasAnyUser, requireAuth, updateAccount,
@@ -9,7 +10,20 @@ const router = Router();
 const COOKIE_MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 const MIN_PASSWORD_LENGTH = 8;
 
-router.post('/login', asyncHandler(async (req, res) => {
+// Keyed by req.ip (correct per-client thanks to `trust proxy` in index.js, not the
+// shared Traefik hop) — Turnstile only has to be solved once per 24h, so without
+// this a verified browser could otherwise brute-force the single admin password
+// with no limit at all.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true, // only failed attempts count — a correct login after a typo isn't penalized
+  message: { error: 'Too many login attempts — please try again in a few minutes.' },
+});
+
+router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
 
@@ -19,7 +33,7 @@ router.post('/login', asyncHandler(async (req, res) => {
   }
 
   const token = await createSession(user.id);
-  res.cookie(COOKIE_NAME, token, { httpOnly: true, sameSite: 'lax', maxAge: COOKIE_MAX_AGE_MS });
+  res.cookie(COOKIE_NAME, token, { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: COOKIE_MAX_AGE_MS });
   res.json({ ok: true, username: user.username });
 }));
 

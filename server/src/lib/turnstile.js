@@ -40,6 +40,6 @@ export const requireTurnstile = asyncHandler(async (req, res, next) => {
   res.status(403).json({ error: 'Human verification required', needsTurnstile: true });
 });
 
-export function setVerifiedCookie(res) {
-  res.cookie(COOKIE_NAME, '1', { httpOnly: true, sameSite: 'lax', maxAge: COOKIE_MAX_AGE_MS });
+export function setVerifiedCookie(req, res) {
+  res.cookie(COOKIE_NAME, '1', { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: COOKIE_MAX_AGE_MS });
 }

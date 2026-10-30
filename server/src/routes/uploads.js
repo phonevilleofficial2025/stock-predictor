@@ -234,7 +234,7 @@ router.post('/inventory/commit', asyncHandler(async (req, res) => {
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
-    return res.status(500).json({ error: err.message });
+    throw err; // asyncHandler forwards to the global error middleware (and Sentry)
   } finally {
     client.release();
   }
@@ -336,7 +336,7 @@ router.post('/sales/commit', asyncHandler(async (req, res) => {
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
-    return res.status(500).json({ error: err.message });
+    throw err; // asyncHandler forwards to the global error middleware (and Sentry)
   } finally {
     client.release();
   }
@@ -415,7 +415,7 @@ router.post('/cpfr/commit', asyncHandler(async (req, res) => {
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
-    return res.status(500).json({ error: err.message });
+    throw err; // asyncHandler forwards to the global error middleware (and Sentry)
   } finally {
     client.release();
   }

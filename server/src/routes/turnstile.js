@@ -20,7 +20,7 @@ router.post('/verify', asyncHandler(async (req, res) => {
   const ok = await verifyToken(token, req.ip);
   if (!ok) return res.status(400).json({ error: 'Verification failed — please try again' });
 
-  setVerifiedCookie(res);
+  setVerifiedCookie(req, res);
   res.json({ ok: true });
 }));
 

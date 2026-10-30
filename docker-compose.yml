@@ -30,6 +30,9 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
+      # Comma-separated allowlist of origins the API accepts cross-origin requests
+      # from. Defaults cover local dev; set to the real domain(s) in production.
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost,http://localhost:5173}
     volumes:
       # Holds the old app.db from before the Postgres migration — kept as a free
       # backup and as the source the one-off migrate-sqlite-to-postgres.js script
